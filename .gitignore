@@ -1,0 +1,49 @@
+# CMake, Visual Studio and local dependency installs
+/build/
+/out/
+/cmake-build-*/
+/.vs/
+/.cache/
+CMakeUserPresets.json
+*.user
+*.suo
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local settings and generated designs
+.env
+.env.*
+!.env.example
+/outputs/
+/painting-result/
+/arrow_result/
+/turn_result/
+/views/
+/replay/
+/models/
+/new-design/
+/demo_caustic.*
+/*.step
+/*.stp
+/*.brep
+/*.stl
+/*.3mf
+/*.obj
+*.ccad
+*.pgm
+*.png
+*.log
+
+# Assets shipped with the editor and its documentation
+!docs/**/*.png
+!examples/**/*.png
+!examples/**/*.pgm
+!examples/**/*.ccad
+!tests/**/*.png
+!tests/**/*.pgm
+!tests/**/*.ccad

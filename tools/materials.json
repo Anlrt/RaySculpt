@@ -1,0 +1,37 @@
+{
+  "pmma": {
+    "name": "PLEXIGLAS GS / XT",
+    "density": 1.19,
+    "default": "589.3",
+    "indices": {
+      "589.3": 1.491
+    },
+    "source": "https://www.plexiglas.de/files/plexiglas-content/pdf/technische-informationen/211-1-PLEXIGLAS-GS-XT-EN.pdf"
+  },
+  "bk7": {
+    "name": "SCHOTT N-BK7",
+    "density": 2.51,
+    "default": "587.6",
+    "indices": {
+      "486.1": 1.52238,
+      "546.1": 1.51872,
+      "587.6": 1.5168,
+      "589.3": 1.51673,
+      "656.3": 1.51432
+    },
+    "source": "https://media.schott.com/api/public/content/41e799d0bf874807a0bb8e702fbb75b5?v=54856406"
+  },
+  "sf11": {
+    "name": "SCHOTT N-SF11",
+    "density": 3.22,
+    "default": "587.6",
+    "indices": {
+      "486.1": 1.80651,
+      "546.1": 1.79192,
+      "587.6": 1.78472,
+      "589.3": 1.78446,
+      "656.3": 1.77596
+    },
+    "source": "https://media.schott.com/api/public/content/78e83df5ca2c4da4ad4490a52c80a146?v=1a468147"
+  }
+}
