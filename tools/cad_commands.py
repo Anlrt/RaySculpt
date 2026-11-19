@@ -247,13 +247,16 @@ class ModelingCommands:
     def inspect_geometry(self):
         out=self.work/(uuid4().hex+".json")
         def finished():
-            self.inspection=json.loads(out.read_text(encoding="utf-8"))
-            if not self.inspection:
-                self.log("Проверка завершена: CAD-тела, границы сеток и пересечения с экранами прошли проверку.")
-            for report in self.inspection:
-                self.log(report["message"],report["severity"],report["objects"])
-            self.refresh()
+            self.show_inspection(json.loads(out.read_text(encoding="utf-8")))
         self.worker("inspect","Проверка исходной геометрии…",dict(scene=self.scene,assets=str(self.assets),path=str(out)),finished)
+
+    def show_inspection(self,reports):
+        self.inspection=reports
+        if not reports:
+            self.log("Проверка завершена. CAD-тела, границы сеток и пересечения с экранами прошли проверку.")
+        for report in reports:
+            self.log(report["message"],report["severity"],report["objects"])
+        self.refresh()
 
     def placement(self):
         from cad_placement import apply_layout

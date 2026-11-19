@@ -6,7 +6,7 @@ import math
 import subprocess
 import numpy as np
 from PIL import Image
-from cad_scene import ROOT,optical_setup,rotation,relative,diagnostics,trace_settings,index
+from cad_scene import ROOT,optical_setup,rotation,relative,diagnostics,trace_settings,index,potential_relief_collisions
 
 
 def apply_layout(scene,screen_id,mode,gap,lamp_distance,size):
@@ -56,6 +56,11 @@ def search(req):
             apply_layout(test,screen["id"],mode,float(g),float(d),req["size"])
             if any(bad for bad,_,_ in diagnostics(test)):
                 continue
+            nearby=potential_relief_collisions(test)
+            if nearby:
+                from cad_inspect import inspect
+                if inspect(dict(objects=nearby),assets):
+                    continue
             # Freeform slope estimated at the four aperture corners, before synthesis.
             deviations=[]
             for x,y in ((-1,-1),(1,-1),(1,1),(-1,1)):

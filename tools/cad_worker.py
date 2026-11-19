@@ -30,7 +30,16 @@ def contain_children():
 
 def run(request):
     task=request["task"]
-    if task=="inspect":
+    if task=="checked_trace":
+        import subprocess
+        contain_children()
+        from cad_inspect import inspect
+        issues=inspect(request["scene"],Path(request["assets"]))
+        if issues:
+            Path(request["path"]).write_text(json.dumps(issues,ensure_ascii=False),encoding="utf-8")
+        else:
+            subprocess.run([request["cli"],*request["args"]],check=True)
+    elif task=="inspect":
         from cad_inspect import inspect
         result=inspect(request["scene"],Path(request["assets"]))
         Path(request["path"]).write_text(json.dumps(result,ensure_ascii=False),encoding="utf-8")

@@ -85,6 +85,9 @@ void test_source_errors() {
     scene.source.center = {0.0, 0.0, 0.0};
     require(has_code(run_preflight(scene), "SOURCE_INSIDE_OPTIC", DiagnosticSeverity::Error),
             "point inside closed optic must fail");
+    scene.source.kind = LightSourceKind::SolarDisk;
+    require(!has_code(run_preflight(scene), "SOURCE_INSIDE_OPTIC", DiagnosticSeverity::Error),
+            "the graphical solar marker is not a finite source");
 
     scene = valid_scene();
     scene.source.center = {10.0, 0.0, 0.0};

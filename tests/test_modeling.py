@@ -141,6 +141,15 @@ class ModelingTests(unittest.TestCase):
         self.plate["profile"] = model.store_asset(path,self.folder)
         self.screen.update(pos=(np.array(self.plate["pos"])+model.rotation(self.plate)[:,2]*8.2).tolist())
         self.assertFalse(any(bad for bad,_,_ in model.diagnostics(self.scene)))
+        nearby=model.potential_relief_collisions(self.scene)
+        self.assertEqual(nearby,[self.plate,self.screen])
+        from cad_worker import run
+        from unittest.mock import patch
+        with patch("cad_worker.contain_children"), patch("subprocess.run") as tracer:
+            issues=self.folder/"issues.json"
+            run(dict(task="checked_trace",scene=dict(objects=nearby),assets=self.folder,path=issues))
+            tracer.assert_not_called()
+            self.assertTrue(issues.is_file())
         self.assertTrue(any(set(r["objects"])=={self.plate["id"],self.screen["id"]} for r in inspect(self.scene,self.folder)))
         mesh = model.node("mesh")
         source = self.folder/"open.obj"

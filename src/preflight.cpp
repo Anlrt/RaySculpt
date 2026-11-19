@@ -333,6 +333,11 @@ PreflightReport run_preflight(const PreflightScene& scene, const PreflightBudget
     }
     bool source_rectangle_valid = false;
     Rectangle source_rectangle{};
+    const bool distant = scene.source.kind == LightSourceKind::SolarDisk;
+    if (distant && !valid_basis(scene.source.u, scene.source.v)) {
+        add(report, DiagnosticSeverity::Error, "SOURCE_INVALID_DIRECTION", "source",
+            "The solar source needs a finite orthonormal basis.");
+    }
     if (scene.source.kind == LightSourceKind::Rectangle) {
         source_rectangle_valid = source_center_valid && valid_basis(scene.source.u, scene.source.v) &&
             positive_finite(scene.source.width_mm) && positive_finite(scene.source.height_mm);
@@ -390,7 +395,7 @@ PreflightReport run_preflight(const PreflightScene& scene, const PreflightBudget
         if (!receiver_valid[i]) continue;
         const std::string object_id = scene.receivers[i].id.empty()
             ? "receiver[" + std::to_string(i) + "]" : scene.receivers[i].id;
-        if (source_center_valid && point_in_rectangle(scene.source.center, rectangles[i], tolerance)) {
+        if (!distant && source_center_valid && point_in_rectangle(scene.source.center, rectangles[i], tolerance)) {
             add(report, DiagnosticSeverity::Error, "SOURCE_ON_RECEIVER", object_id,
                 "The light source lies on a projection surface.");
         }
@@ -416,10 +421,10 @@ PreflightReport run_preflight(const PreflightScene& scene, const PreflightBudget
             add(report, DiagnosticSeverity::Warning, "OPTIC_NOT_CLOSED_OR_ORIENTED", "optic",
                 "The optic mesh is open, non-manifold, or inconsistently oriented.");
         }
-        if (mode == PreflightMode::Final) {
+        if (!distant && mode == PreflightMode::Final) {
             check_point_against_optic(report, scene.optic, bounds, closed,
                                       scene.source.center, tolerance, "source");
-        } else if (in_bounds(scene.source.center, bounds, tolerance)) {
+        } else if (!distant && in_bounds(scene.source.center, bounds, tolerance)) {
             add(report, DiagnosticSeverity::Warning, "SOURCE_OPTIC_POSITION_UNCHECKED", "source",
                 "The source lies within the optic bounds; exact containment is deferred to final preflight.");
         }

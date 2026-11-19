@@ -236,6 +236,19 @@ def relative(plate, item):
     return basis @ (np.array(item["pos"])-plate["pos"]), basis @ rotation(item)
 
 
+def potential_relief_collisions(scene):
+    plate,light,screens=optical_setup(scene)
+    width=plate["dims"]["w"]
+    height=plate["dims"]["h"]+plate.get("max_relief",math.inf if "profile" in plate else 0.)
+    candidates=[]
+    for face in [*screens,*([light] if light["kind"]=="area" else [])]:
+        c,b=relative(plate,face)
+        extent=(abs(b[:,0])*face["dims"]["w"]+abs(b[:,1])*face["dims"]["d"])/2
+        if np.all(c+extent>=[-width/2,-width/2,0]) and np.all(c-extent<=[width/2,width/2,height]):
+            candidates.append(face)
+    return [plate,*candidates] if candidates else []
+
+
 def rect_intersects(a,b):
     # Separating axes for two finite rectangles, incl. in-plane axes for coplanar cases.
     axes_a, axes_b = rotation(a).T, rotation(b).T

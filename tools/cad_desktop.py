@@ -1005,7 +1005,11 @@ class Window(ModelingCommands,W.QMainWindow):
         cfg.write_text(model.trace_settings(self.scene,max_px,rays),encoding="ascii")
         profile=self.assets/plate["profile"] if "profile" in plate else "-"
         names=[s["name"] for s in screens]
+        issues_file=out.with_suffix(".issues.json")
         def finished():
+            if issues_file.is_file():
+                self.show_inspection(json.loads(issues_file.read_text(encoding="utf-8")))
+                return
             report=json.loads((out/"report.json").read_text())
             self.result=(out,report)
             self.optical_issues=[]
@@ -1024,7 +1028,14 @@ class Window(ModelingCommands,W.QMainWindow):
                     self.optical_issues.append((obj["id"],msg))
                     self.log(msg,"warning",[obj["id"]])
             self.refresh()
-        self.launch("trace","Проверка проекции…",CLI,["trace-scene",cfg,profile,out],out,finished)
+        args=["trace-scene",str(cfg),str(profile),str(out)]
+        nearby=model.potential_relief_collisions(self.scene)
+        if nearby:
+            self.worker("checked_trace","Проверка пересечений и проекции…",
+                        dict(scene=dict(objects=nearby),assets=str(self.assets),path=str(issues_file),
+                             cli=str(CLI),args=args),finished)
+        else:
+            self.launch("trace","Проверка проекции…",CLI,args,out,finished)
 
     def quality(self):
         return getattr(self,"ray_count",2000000),getattr(self,"resolution",256)
