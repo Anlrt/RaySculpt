@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
+VERSION=(ROOT/"VERSION").read_text(encoding="ascii").strip()
 if (ROOT/"build/ui-libs").is_dir():
     sys.path.insert(0,str(ROOT/"build/ui-libs"))
 
@@ -19,6 +20,8 @@ from PySide6 import QtCore as C, QtGui as G, QtWidgets as W
 from PySide6.QtCore import Qt
 
 import cad_scene as model
+import cad_topology as topo
+from cad_commands import ModelingCommands
 from cad_geometry import visual_geometry
 from cad_view import View
 from export_plate import Profile
@@ -32,6 +35,7 @@ QMenuBar,QMenu,QToolBar {background:#fff;color:#233844}
 QToolBar {border:0;border-bottom:1px solid #c9d4da;spacing:5px;padding:4px}
 QToolButton {padding:5px 8px;border:1px solid transparent;border-radius:3px}
 QToolButton:hover,QToolButton:pressed {background:#e4f0f6;border-color:#bfd8e5}
+QToolButton:checked {background:#c4deef;color:#14384f;border-color:#6592ad}
 QTreeWidget,QTextEdit,QListWidget,QScrollArea {background:#fff;border:0}
 QTreeWidget::item {padding:5px}
 QTreeWidget::item:selected {background:#d9eaf4;color:#173a52}
@@ -55,6 +59,18 @@ def setup_style(app):
         for name in ("segoeui.ttf","seguisb.ttf","segoeuib.ttf"):
             G.QFontDatabase.addApplicationFont(str(fonts/name))
     app.setStyle("Fusion")
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    palette=G.QPalette()
+    colors={"Window":"#eff3f5","WindowText":"#233844","Base":"#ffffff","AlternateBase":"#f0f5f8",
+            "Text":"#233844","Button":"#f3f7fa","ButtonText":"#233844","Highlight":"#c8e2f1",
+            "HighlightedText":"#15394c","ToolTipBase":"#fff7dc","ToolTipText":"#213541",
+            "PlaceholderText":"#566975","Link":"#165b85","BrightText":"#ffffff",
+            "Light":"#ffffff","Midlight":"#e6edf1","Mid":"#a8bac4","Dark":"#6a818d","Shadow":"#475964"}
+    for role,color in colors.items():
+        palette.setColor(getattr(G.QPalette.ColorRole,role),G.QColor(color))
+    for role in ("WindowText","Text","ButtonText","PlaceholderText"):
+        palette.setColor(G.QPalette.Disabled,getattr(G.QPalette.ColorRole,role),G.QColor("#5b6b73"))
+    app.setPalette(palette)
     app.setStyleSheet(STYLES)
     app.setFont(G.QFont("Segoe UI",9))
 
@@ -90,7 +106,7 @@ def save_material(key,material):
         raise OSError(file.errorString())
 
 
-class Window(W.QMainWindow):
+class Window(ModelingCommands,W.QMainWindow):
     def __init__(self):
         super().__init__()
         self.resize(1320,840)
@@ -151,8 +167,9 @@ class Window(W.QMainWindow):
         self.prev_issues=set()
         self.actions={}
         self.make_actions()
+        self.modeling_actions()
         self.refresh()
-        C.QTimer.singleShot(0,self.cam.fit)
+        C.QTimer.singleShot(0,lambda:self.cam.fit(True))
 
     def dock(self,title,widget,area,width):
         d=W.QDockWidget(title,self)
@@ -196,6 +213,9 @@ class Window(W.QMainWindow):
         self.act(edit,"Отменить",self.undo,"Ctrl+Z","undo")
         self.act(edit,"Вернуть",self.redo,"Ctrl+Y","redo")
         self.act(edit,"Удалить объект",self.remove,"Delete","delete")
+        move=self.act(edit,"Переместить",self.toggle_move,"M","move",bar)
+        move.setCheckable(True)
+        move.setToolTip("Перемещать тело левой кнопкой мыши (M). Точное положение — в параметрах объекта.")
         bar.addSeparator()
         insert=W.QToolButton()
         insert.setText("Добавить тело")
@@ -213,7 +233,7 @@ class Window(W.QMainWindow):
         self.act(solid,"Зафиксировать относительно…",self.mate,key="mate")
         self.act(solid,"Снять связь",self.unmate,key="unmate")
         self.act(solid,"Материалы…",self.materials,key="library",bar=bar)
-        for kind in ("point","area","screen"):
+        for kind in ("point","area","sun","screen"):
             self.act(optics,"Добавить · "+model.LABELS[kind],partial(self.add,kind))
         self.act(optics,"Изображение экрана…",self.target)
         self.act(optics,"3D-цель и углы поворота…",self.turntable)
@@ -236,6 +256,14 @@ class Window(W.QMainWindow):
     def color_relief(self):
         self.cam.color_relief=not self.cam.color_relief
         self.cam.update()
+
+    def toggle_move(self):
+        self.cam.move_mode=self.actions["move"].isChecked()
+        if self.cam.move_mode:
+            self.pick_selector.setCurrentIndex(0)
+        self.cam.setCursor(Qt.OpenHandCursor if self.cam.move_mode else Qt.ArrowCursor)
+        if self.cam.move_mode:
+            self.statusBar().showMessage("Перетащите тело левой кнопкой. Shift+ЛКМ работает и в режиме выбора.",6000)
 
     def grid(self):
         self.cam.show_grid=not self.cam.show_grid
@@ -277,6 +305,7 @@ class Window(W.QMainWindow):
 
     def invalidate(self):
         self.revision+=1
+        self.inspection=[]
         self.optical_issues=[]
         if self.result:
             self.result=None
@@ -287,7 +316,9 @@ class Window(W.QMainWindow):
         old=self.snapshot()
         try:
             fn()
+            self.scene["version"]=2
             model.validate(self.scene)
+            topo.rebuild_mates(self.scene,self.assets)
             self.rebuild_geometry()
         except Exception:
             self.scene=json.loads(old)
@@ -321,6 +352,8 @@ class Window(W.QMainWindow):
     def tree_selected(self,current,old):
         if current is not None:
             key=current.data(0,Qt.UserRole)
+            step=current.data(0,Qt.UserRole+1)
+            self.active_step=(key,step) if step else None
             if key:
                 self.select(key)
 
@@ -330,30 +363,45 @@ class Window(W.QMainWindow):
         for obj in self.scene["objects"]:
             if obj["kind"] not in model.SOLIDS:
                 continue
-            signature=self.geometry_key(obj)
+            data=topo.resolved(self.scene,obj)
+            signature=self.geometry_key(data)
             used.add(signature)
             if signature not in self.cache:
-                self.cache[signature]=visual_geometry(obj,self.assets)
+                self.cache[signature]=visual_geometry(data,self.assets)
             geometry[obj["id"]]=self.cache[signature]
         self.cache={k:v for k,v in self.cache.items() if k in used}
         self.cam.geometry=geometry
 
     @staticmethod
     def geometry_key(obj):
-        return json.dumps([obj.get(k) for k in ("kind","dims","profile","asset","cut","outline")],sort_keys=True)
+        return json.dumps([obj.get(k) for k in ("kind","dims","profile","asset","cut","outline","operations","circle","arcs")],sort_keys=True)
 
     def refresh(self):
         self.rebuild_geometry()
         items=self.scene["objects"]
         if not self.obj():
             self.selected=items[0]["id"] if items else None
+        if self.active_step:
+            obj=self.obj()
+            steps=({op["id"] for op in obj.get("operations",[])} | set(obj) | {"base","height"}) if obj else set()
+            if self.active_step[0]!=self.selected or self.active_step[1] not in steps:
+                self.active_step=None
         self.cam.items=items
+        self.cam.consumed=model.consumed_tools(self.scene)
         self.cam.selected=self.selected
         issues=model.diagnostics(self.scene)
         self.cam.errors={key for error,ids,_ in issues if error for key in ids}
+        self.cam.errors.update(k for issue in self.inspection for k in issue["objects"])
         self.cam.errors.update(key for key,_ in self.optical_issues)
         self.cam.update()
         self.tree.blockSignals(True)
+        expanded=set()
+        for i in range(self.tree.topLevelItemCount()):
+            group=self.tree.topLevelItem(i)
+            for j in range(group.childCount()):
+                row=group.child(j)
+                if row.isExpanded():
+                    expanded.add(row.data(0,Qt.UserRole))
         self.tree.clear()
         groups={}
         for label in ("Тела","Освещение","Экраны"):
@@ -364,14 +412,18 @@ class Window(W.QMainWindow):
         for obj in items:
             kind=obj["kind"]
             group="Тела" if kind in model.SOLIDS else ("Экраны" if kind=="screen" else "Освещение")
-            row=W.QTreeWidgetItem(groups[group],[obj["name"]+(" · справочное" if obj.get("reference") else "")])
+            role=" · инструмент" if obj["id"] in self.cam.consumed else (" · справочное" if obj.get("reference") else "")
+            row=W.QTreeWidgetItem(groups[group],[obj["name"]+role])
             row.setData(0,Qt.UserRole,obj["id"])
+            row.setExpanded(obj["id"] in expanded)
+            self.feature_tree(row,obj)
             if obj["id"] in self.cam.errors:
                 row.setForeground(0,G.QColor("#b34136"))
-            if obj["id"]==self.selected:
+            if obj["id"]==self.selected and not (self.active_step and self.active_step[0]==obj["id"]):
                 self.tree.setCurrentItem(row)
         self.tree.blockSignals(False)
         self.properties()
+        self.refresh_picks()
         messages={m for _,_,m in issues}
         for bad,ids,message in issues:
             if message not in self.prev_issues:
@@ -395,7 +447,7 @@ class Window(W.QMainWindow):
         self.actions["redo"].setEnabled(bool(self.future))
         self.actions["delete"].setEnabled(bool(obj) and not obj.get("locked"))
         self.setWindowTitle((self.path.stem if self.path else "Новый проект")
-                            +(" *" if self.snapshot()!=self.saved else "")+"  —  Caustic CAD")
+                            +(" *" if self.snapshot()!=self.saved else "")+"  —  Caustic CAD "+VERSION)
         status=issues[0][2] if issues else (self.optical_issues[0][1] if self.optical_issues else "Готово к расчёту")
         self.status.setText(self.job_label if busy else status)
 
@@ -434,8 +486,15 @@ class Window(W.QMainWindow):
         if "cut" in obj:
             form.addRow("Срез, Z",W.QLabel(f'{obj["cut"]:g} мм'))
         if obj["kind"] in model.SOLIDS:
+            visible=W.QCheckBox("Показывать тело")
+            available=obj["id"] not in self.cam.consumed
+            visible.setChecked(available and not obj.get("hidden"))
+            visible.setEnabled(available)
+            visible.toggled.connect(lambda v:self.guard(lambda:setval("hidden",not v)))
+            form.addRow(visible)
             reference=W.QCheckBox("Справочное тело · вне оптики")
-            reference.setChecked(bool(obj.get("reference")))
+            reference.setChecked(not available or bool(obj.get("reference")))
+            reference.setEnabled(available)
             reference.toggled.connect(lambda v:self.guard(lambda:setval("reference",v)))
             form.addRow(reference)
             heading("Материал")
@@ -496,24 +555,43 @@ class Window(W.QMainWindow):
         if self.drag_start is None:
             self.drag_start=self.snapshot()
         model.move(self.scene,obj,location,obj["rot"])
-        if done:
+        if not done:
+            issues=model.diagnostics(self.scene)
+            self.cam.errors={k for bad,ids,_ in issues if bad for k in ids}
+            self.status.setText(issues[0][2] if issues else "Перемещение · отпустите кнопку для перестроения")
+            self.cam.update()
+            return
+        try:
+            topo.rebuild_mates(self.scene,self.assets)
+            self.rebuild_geometry()
+        except Exception as exc:
+            self.scene=json.loads(self.drag_start)
+            self.log(str(exc),"error",[key])
+        else:
             self.remember(self.drag_start)
-            self.drag_start=None
+        self.drag_start=None
         self.refresh()
 
     def add(self,kind):
-        obj=model.node(kind,260 if kind=="screen" else (-600 if kind in ("point","area") else 0))
+        obj=model.node(kind)
         count=sum(i["kind"]==kind for i in self.scene["objects"])
         if count:
             obj["name"]+=" "+str(count+1)
-        if kind=="screen":
-            obj["pos"][0]=65.*count
+        plate=next((i for i in self.scene["objects"] if i["kind"]=="plate"),None)
+        if kind in ("point","area","sun","screen") and plate:
+            axis=model.rotation(plate)
+            offset=[65.*count if kind=="screen" else 0,0,125. if kind=="screen" else -240.]
+            obj.update(pos=(np.asarray(plate["pos"])+axis@offset).tolist(),rot=plate["rot"][:])
+        elif kind in model.SOLIDS and plate:
+            obj["pos"]=(np.asarray(plate["pos"])+model.rotation(plate)[:,0]*(45+count*45)).tolist()
         self.selected=obj["id"]
         self.mutate(lambda:self.scene["objects"].append(obj))
         self.tabs.setCurrentIndex(0)
-        self.cam.fit()
+        self.cam.fit(True)
 
     def remove(self):
+        if self.active_step:
+            return self.delete_step()
         obj=self.obj()
         if obj and not obj["locked"]:
             def remove():
@@ -522,6 +600,7 @@ class Window(W.QMainWindow):
                 for child in self.scene["objects"]:
                     if child.get("parent")==obj["id"]:
                         child.pop("parent")
+                        child.pop("constraint",None)
                 self.scene["objects"].remove(obj)
             self.mutate(remove)
 
@@ -534,11 +613,14 @@ class Window(W.QMainWindow):
             raise ValueError("Все остальные объекты уже связаны с выбранным")
         choice,ok=W.QInputDialog.getItem(self,"Жёсткая связь","Следовать за объектом",names,0,False)
         if ok:
-            self.mutate(lambda:obj.update(parent=parents[names.index(choice)]["id"]))
+            def attach():
+                obj.pop("constraint",None)
+                obj.update(parent=parents[names.index(choice)]["id"])
+            self.mutate(attach)
 
     def unmate(self):
         obj=self.obj()
-        self.mutate(lambda:obj.pop("parent"))
+        self.mutate(lambda:(obj.pop("parent"),obj.pop("constraint",None)))
 
     def align(self):
         plate,_,_=model.optical_setup(self.scene)
@@ -562,18 +644,32 @@ class Window(W.QMainWindow):
         if ok:
             self.mutate(lambda:obj.update(cut=value))
 
-    def sketch(self,editing):
+    def sketch(self,editing,support=None,plane=None):
         from cad_sketch import Sketch
         obj=deepcopy(self.obj()) if editing else model.node("prism")
-        dialog=Sketch(self,obj["outline"] if editing else [])
+        dialog=Sketch(self,obj["outline"] if editing else [],obj.get("circle"),obj.get("arcs"))
+        if plane:
+            obj["rot"]={"XY":[0.,0.,0.],"XZ":[90.,0.,0.],"YZ":[90.,0.,90.]}[plane]
+            dialog.setWindowTitle("Эскиз на плоскости "+plane)
+        if support:
+            anchor,b=topo.world_frame(self.scene,support,self.assets)
+            obj.update(pos=anchor.tolist(),rot=topo.euler(b),parent=support["object"])
+            obj["constraint"]=dict(base=support,own=dict(object=obj["id"],kind="vertex_origin",index=0),angle=0.,distance=0.)
+            dialog.setWindowTitle("Эскиз на выбранной грани")
         while dialog.exec()==W.QDialog.Accepted:
             obj["outline"]=deepcopy(dialog.canvas.points)
+            obj["arcs"]=dict(dialog.canvas.arcs)
+            if dialog.canvas.circle:
+                obj["circle"]=dialog.canvas.circle[:]
+            else:
+                obj.pop("circle",None)
             try:
-                data=visual_geometry(obj,self.assets)
+                resolved=topo.resolved(self.scene,obj)
+                data=visual_geometry(resolved,self.assets)
             except Exception as exc:
                 W.QMessageBox.warning(self,"Проверьте эскиз",str(exc))
                 continue
-            self.cache[self.geometry_key(obj)]=data
+            self.cache[self.geometry_key(resolved)]=data
             self.selected=obj["id"]
             def apply():
                 if editing:
@@ -598,6 +694,7 @@ class Window(W.QMainWindow):
 
     def replace(self,scene,path=None):
         model.validate(scene)
+        topo.rebuild_mates(scene,self.assets)
         previous=self.scene
         self.scene=scene
         try:
@@ -613,8 +710,9 @@ class Window(W.QMainWindow):
         self.selected=scene["objects"][0]["id"] if scene["objects"] else None
         self.saved=self.snapshot()
         self.tabs.setCurrentIndex(0)
+        self.picks.clear()
         self.refresh()
-        self.cam.fit()
+        self.cam.fit(True)
 
     def new(self):
         if self.confirm():
@@ -657,8 +755,9 @@ class Window(W.QMainWindow):
             key=uuid4().hex
             scene["materials"][key]=dict(name=f"Из профиля · n {n:g}",density=None,default="nominal",indices={"nominal":n},source="")
             plate.update(material=key,line="nominal")
-        src["pos"][2]=-distance
-        screen["pos"][2]=z
+        axis=model.rotation(plate)[:,2]
+        src["pos"]=(np.asarray(plate["pos"])-distance*axis).tolist()
+        screen["pos"]=(np.asarray(plate["pos"])+z*axis).tolist()
         screen["dims"]={"w":w,"d":d}
         self.replace(scene)
         self.saved=""
@@ -891,7 +990,8 @@ class Window(W.QMainWindow):
                                            min(2048,max(512,2*(n-1))),n-1,2048)
             if not ok:
                 return
-        self.worker("export","Сохранение геометрии…",dict(object=obj,assets=str(self.assets),path=str(path),cells=cells),
+        export_item=dict(topo.resolved(self.scene,obj),pos=obj["pos"],rot=obj["rot"])
+        self.worker("export","Сохранение геометрии…",dict(object=export_item,assets=str(self.assets),path=str(path),cells=cells),
                     lambda:self.log("Модель сохранена · "+str(path)))
 
     def trace(self):

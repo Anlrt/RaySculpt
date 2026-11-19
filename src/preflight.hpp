@@ -9,7 +9,7 @@
 
 namespace caustic {
 
-enum class LightSourceKind { Point, Rectangle };
+enum class LightSourceKind { Point, Rectangle, SolarDisk };
 
 // All positions and lengths are in millimetres. For a Rectangle, u and v are
 // unit, perpendicular directions and cross(u, v) is the emitting normal.

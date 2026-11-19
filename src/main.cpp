@@ -82,7 +82,10 @@ void run_design_command(int argc, ArgChar** argv) {
 }
 
 int export_command(int argc, ArgChar** argv, bool design) {
-    auto script = std::filesystem::absolute(argv[0]).parent_path() / "tools" / "export_plate.py";
+    const auto bin = std::filesystem::absolute(argv[0]).parent_path();
+    auto script = bin / "tools" / "export_plate.py";
+    if (!std::filesystem::is_regular_file(script))
+        script = bin.parent_path().parent_path() / "tools" / "export_plate.py";
     if (!std::filesystem::is_regular_file(script))
         script = std::filesystem::path(CAUSTIC_TOOLS_DIR) / "export_plate.py";
 #ifdef _WIN32

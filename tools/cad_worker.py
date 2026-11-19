@@ -30,7 +30,16 @@ def contain_children():
 
 def run(request):
     task=request["task"]
-    if task=="export":
+    if task=="inspect":
+        from cad_inspect import inspect
+        result=inspect(request["scene"],Path(request["assets"]))
+        Path(request["path"]).write_text(json.dumps(result,ensure_ascii=False),encoding="utf-8")
+    elif task=="placement":
+        contain_children()
+        from cad_placement import search
+        result=search(request)
+        Path(request["path"]).write_text(json.dumps(result,ensure_ascii=False),encoding="utf-8")
+    elif task=="export":
         from cad_geometry import export_body
         export_body(request["object"],Path(request["assets"]),Path(request["path"]),request.get("cells"))
     elif task=="import":

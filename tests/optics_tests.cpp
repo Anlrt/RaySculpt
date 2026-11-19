@@ -116,6 +116,21 @@ void test_total_internal_reflection() {
     require_finite_nonnegative(result.images[0]);
 }
 
+void test_solar_disk() {
+    LightSource sun;
+    sun.kind = LightSourceKind::SolarDisk;
+    const auto cfg = config();
+    auto wall = screen("wall", 100);
+    const auto first = trace_caustic(flat_plate(), {}, sun, {wall}, cfg);
+    require(first.stats.receiver_hit > cfg.ray_count * 99 / 100, "solar disc did not illuminate plate");
+    sun.center = {71, -25, -400};
+    const auto moved = trace_caustic(flat_plate(), {}, sun, {wall}, cfg);
+    require(first.images[0].values == moved.images[0].values, "solar image depends on marker position");
+    sun.u = {-1, 0, 0};
+    const auto reversed = trace_caustic(flat_plate(), {}, sun, {wall}, cfg);
+    require(reversed.stats.source_rejected == cfg.ray_count, "reversed sun lit the front of the plate");
+}
+
 void test_rotation_and_cancel() {
     LightSource source;
     source.center = {0, 0, -100};
@@ -161,6 +176,7 @@ int main() {
         test_flat_plate_point_source();
         test_area_source_and_nearest_screen();
         test_total_internal_reflection();
+        test_solar_disk();
         test_rotation_and_cancel();
         test_budget_validation();
         std::cout << "optics tests passed\n";

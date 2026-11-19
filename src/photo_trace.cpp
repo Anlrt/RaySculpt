@@ -35,10 +35,10 @@ SceneInput read_scene(const std::filesystem::path& settings) {
     vector(light.u);
     vector(light.v);
     in >> light.width_mm >> light.height_mm >> count;
-    if (!in || (area != 0 && area != 1) || count < 1 || count > 4096 ||
+    if (!in || area < 0 || area > 2 || count < 1 || count > 4096 ||
         cfg.ray_count < 1000 || cfg.ray_count > 200'000'000)
         throw std::invalid_argument("invalid CAD scene settings");
-    light.kind = area ? LightSourceKind::Rectangle : LightSourceKind::Point;
+    light.kind = area==2 ? LightSourceKind::SolarDisk : (area==1 ? LightSourceKind::Rectangle : LightSourceKind::Point);
     screens.resize(count);
     std::uint64_t pixels = 0;
     for (int i = 0; i < count; ++i) {

@@ -326,8 +326,18 @@ RayOutcome trace_one(const HeightField& plate, const PlatePose& pose,
             return outcome;
         }
     }
-    const Vec3 delta = front_world - source_world;
-    const double distance_squared = length_squared(delta);
+    Vec3 delta = front_world - source_world;
+    double distance_squared = length_squared(delta);
+    if (source.kind == LightSourceKind::SolarDisk) {
+        // Apparent diameter at 1 AU: 1919 arcsec. Uniform radiance over the solar disc.
+        constexpr double pi = 3.141592653589793;
+        const double alpha = 1919.0*pi/(3600.0*180.0*2.0);
+        const double radius = std::tan(alpha)*std::sqrt(random01(config.seed,ray_index,2));
+        const double azimuth = 2*pi*random01(config.seed,ray_index,3);
+        delta = cross(source.u,source.v) + source.u*(radius*std::cos(azimuth)) +
+                source.v*(radius*std::sin(azimuth));
+        distance_squared = 1.0; // Unit incident irradiance, independent of the marker position.
+    }
     if (!(distance_squared > kEpsilon) || !std::isfinite(distance_squared)) {
         outcome.kind = RayOutcome::Kind::SourceRejected;
         return outcome;
@@ -429,8 +439,8 @@ void validate_inputs(const HeightField& plate, const PlatePose& pose,
         throw std::invalid_argument("invalid plate pose");
     if (!finite(source.center) || !finite(source.u) || !finite(source.v))
         throw std::invalid_argument("invalid light source");
-    if (source.kind == LightSourceKind::Rectangle) {
-        if (!positive_finite(source.width_mm) || !positive_finite(source.height_mm) ||
+    if (source.kind != LightSourceKind::Point) {
+        if ((source.kind==LightSourceKind::Rectangle && (!positive_finite(source.width_mm) || !positive_finite(source.height_mm))) ||
             std::abs(length(source.u) - 1.0) > 1e-6 ||
             std::abs(length(source.v) - 1.0) > 1e-6 ||
             std::abs(dot(source.u, source.v)) > 1e-6)

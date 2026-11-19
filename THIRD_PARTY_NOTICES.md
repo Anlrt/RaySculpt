@@ -40,3 +40,17 @@ Material properties in the local catalog are taken from the manufacturers.
 - [SCHOTT N-SF11 datasheet](https://media.schott.com/api/public/content/78e83df5ca2c4da4ad4490a52c80a146?v=1a468147). Density and tabulated visible indices.
 
 The Mona Lisa reproduction in the example project is the file supplied by the project owner.
+
+## Additions in 0.2.0
+
+The solar source uses an apparent solar diameter of 1,919 arcseconds at 1 AU.
+[NASA Sun Fact Sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/sunfact.html).
+
+Mesh picking uses an independently written vectorized implementation of the
+ray–triangle intersection described by Tomas Möller and Ben Trumbore (1997).
+[Fast, Minimum Storage Ray–Triangle Intersection](https://doi.org/10.1080/10867651.1997.10487468).
+
+Subshape selection, BREP validity, distance queries and Boolean operations use
+the installed Open CASCADE bindings listed above. The Windows package contains
+the project code, the compiled project engine and the examples. The launcher
+obtains the dependencies as wheels, including their upstream notices, using pip.

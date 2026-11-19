@@ -13,6 +13,8 @@ class Canvas(W.QWidget):
         self.scale=5
         self.step=1.
         self.selected=-1
+        self.arcs={}
+        self.circle=None
         self.drag=False
         self.center=np.array([0.,0.])
         self.setMinimumSize(330,280)
@@ -52,18 +54,38 @@ class Canvas(W.QWidget):
         p.setRenderHint(G.QPainter.Antialiasing)
         p.setPen(G.QPen(G.QColor("#367fa0"),2))
         p.setBrush(G.QColor(106,177,201,65))
-        poly=G.QPolygonF([self.xy(pt) for pt in self.points])
+        if self.circle:
+            x,y,r=self.circle
+            p.drawEllipse(self.xy([x,y]),r*self.scale,r*self.scale)
+            return
+        contour=[]
+        for j,a in enumerate(self.points):
+            contour.append(a)
+            rise=self.arcs.get(str(j),0.)
+            if rise:
+                b=np.asarray(self.points[(j+1)%len(self.points)])
+                a=np.asarray(a)
+                length=np.linalg.norm(b-a)
+                if length<1e-8:
+                    continue
+                normal=np.array([a[1]-b[1],b[0]-a[0]])/length
+                center=(a+b)/2+normal*(rise**2-length**2/4)/(2*rise)
+                start=math.atan2(*(a-center)[::-1])
+                sweep=-4*math.atan(2*rise/length)
+                for t in np.linspace(start,start+sweep,41)[1:-1]:
+                    contour.append(center+np.linalg.norm(a-center)*np.array([math.cos(t),math.sin(t)]))
+        poly=G.QPolygonF([self.xy(pt) for pt in contour])
         if len(poly)>=3:
             p.drawPolygon(poly)
         else:
             p.drawPolyline(poly)
-        for j,pt in enumerate(poly):
+        for j,pt in enumerate(self.xy(p) for p in self.points):
             p.setBrush(G.QColor("#de8b45" if j==self.selected else "#fff"))
             p.drawEllipse(pt,4,4)
             p.drawText(pt+C.QPointF(6,-5),str(j+1))
 
     def mousePressEvent(self,e):
-        if e.button()!=Qt.LeftButton:
+        if e.button()!=Qt.LeftButton or self.circle:
             return
         hit=next((i for i,p in enumerate(self.points) if (self.xy(p)-e.position()).manhattanLength()<10),None)
         if hit is None:
@@ -89,13 +111,15 @@ class Canvas(W.QWidget):
 
 
 class Sketch(W.QDialog):
-    def __init__(self,parent,points):
+    def __init__(self,parent,points,circle=None,arcs=None):
         super().__init__(parent)
         self.setWindowTitle("Эскиз · плоскость XY")
         self.resize(690,410)
         layout=W.QVBoxLayout(self)
         main=W.QHBoxLayout()
         self.canvas=Canvas(points)
+        self.canvas.circle=circle[:] if circle else None
+        self.canvas.arcs=dict(arcs or {})
         main.addWidget(self.canvas,1)
         side=W.QVBoxLayout()
         self.table=W.QTableWidget(0,2)
@@ -105,6 +129,10 @@ class Sketch(W.QDialog):
         self.table.setSelectionBehavior(W.QAbstractItemView.SelectRows)
         side.addWidget(self.table)
         for name,fn in (("Добавить вершину",self.add),("Удалить вершину",self.remove),("Вписать",self.canvas.fit)):
+            b=W.QPushButton(name)
+            b.clicked.connect(fn)
+            side.addWidget(b)
+        for name,fn in (("Окружность…",self.set_circle),("Дуга на сегменте…",self.arc),("Длина и угол сегмента…",self.dimension)):
             b=W.QPushButton(name)
             b.clicked.connect(fn)
             side.addWidget(b)
@@ -133,7 +161,7 @@ class Sketch(W.QDialog):
         if self.canvas.selected>=0:
             self.table.selectRow(self.canvas.selected)
         self.table.blockSignals(False)
-        self.buttons.button(W.QDialogButtonBox.Ok).setEnabled(len(self.canvas.points)>=3)
+        self.buttons.button(W.QDialogButtonBox.Ok).setEnabled(bool(self.canvas.circle) or len(self.canvas.points)>=3)
         self.canvas.update()
 
     def edit(self,row,col):
@@ -146,6 +174,7 @@ class Sketch(W.QDialog):
         self.fill()
 
     def add(self):
+        self.canvas.circle=None
         last=self.canvas.points[-1] if self.canvas.points else [0,0]
         self.canvas.points.append([last[0]+5,last[1]+5])
         self.canvas.selected=len(self.canvas.points)-1
@@ -155,5 +184,53 @@ class Sketch(W.QDialog):
         i=self.canvas.selected
         if i>=0:
             self.canvas.points.pop(i)
+            self.canvas.arcs={str(int(k)-(int(k)>i)):v for k,v in self.canvas.arcs.items()
+                              if int(k) not in (i,(i-1)%(len(self.canvas.points)+1))}
             self.canvas.selected=min(i,len(self.canvas.points)-1)
             self.fill()
+
+    def set_circle(self):
+        values=list(self.canvas.circle or (0.,0.,10.))
+        for j,title in enumerate(("Центр X, мм","Центр Y, мм","Радиус, мм")):
+            values[j],ok=W.QInputDialog.getDouble(self,"Окружность",title,values[j],.001 if j==2 else -1e6,1e6,4)
+            if not ok:
+                return
+        self.canvas.points=[]
+        self.canvas.arcs={}
+        self.canvas.circle=values
+        self.canvas.center=np.array(values[:2])
+        self.canvas.scale=min(10.,110/values[2])
+        self.fill()
+
+    def segment(self):
+        j=self.canvas.selected
+        if j<0 or len(self.canvas.points)<2:
+            W.QMessageBox.information(self,"Сегмент","Выберите его начальную вершину в таблице.")
+            return None
+        return j,(j+1)%len(self.canvas.points)
+
+    def arc(self):
+        pair=self.segment()
+        if pair:
+            key=str(pair[0])
+            rise,ok=W.QInputDialog.getDouble(self,"Круговая дуга","Стрела дуги, мм (знак задаёт сторону, 0 — отрезок)",
+                                             self.canvas.arcs.get(key,0.),-1e6,1e6,4)
+            if ok:
+                self.canvas.arcs[key]=rise
+                self.fill()
+
+    def dimension(self):
+        pair=self.segment()
+        if not pair:
+            return
+        i,j=pair
+        a=np.array(self.canvas.points[i])
+        delta=self.canvas.points[j]-a
+        length,ok=W.QInputDialog.getDouble(self,"Размер сегмента","Длина хорды, мм",np.linalg.norm(delta),.001,1e6,4)
+        if ok:
+            angle,ok=W.QInputDialog.getDouble(self,"Направление сегмента","Угол к оси X, °",
+                                               math.degrees(math.atan2(delta[1],delta[0])),-360,360,4)
+            if ok:
+                rad=math.radians(angle)
+                self.canvas.points[j]=(a+length*np.array([math.cos(rad),math.sin(rad)])).tolist()
+                self.fill()

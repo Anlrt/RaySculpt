@@ -4,11 +4,49 @@ import math
 import numpy as np
 
 from plate_cad import BRep, BRepTools, Build, IFSelect, STEPControl, TopAbs, TopoDS, components, gp, solid_for
-from OCP import (Bnd, BRepAlgoAPI, BRepBndLib, BRepCheck, BRepGProp, BRepMesh, BRepPrimAPI,
+from OCP import (Bnd, BRepAlgoAPI, BRepBndLib, BRepCheck, BRepGProp, BRepMesh, BRepPrimAPI, GC,
                  GProp, RWStl, TopLoc)
 from export_plate import Profile
 from plate_files import PlateMesh
 from cad_scene import rotation
+
+
+def transformed(shape,basis,origin):
+    pose=gp.gp_Trsf()
+    pose.SetValues(*np.column_stack((basis,origin)).flatten())
+    return Build.BRepBuilderAPI_Transform(shape,pose,False).Shape()
+
+
+def sketch_face(item):
+    if "circle" in item:
+        x,y,r=item["circle"]
+        if not r>0:
+            raise ValueError("Радиус должен быть положительным")
+        axes=gp.gp_Ax2(gp.gp_Pnt(x,y,0),gp.gp_Dir(0,0,1))
+        wire=Build.BRepBuilderAPI_MakeWire(Build.BRepBuilderAPI_MakeEdge(gp.gp_Circ(axes,r)).Edge()).Wire()
+    else:
+        pts=np.asarray(item["outline"],dtype=float)
+        if len(set(map(tuple,pts)))!=len(pts) or len(pts)<3:
+            raise ValueError("Для контура нужны как минимум три разные вершины")
+        builder=Build.BRepBuilderAPI_MakeWire()
+        for j,(a,b) in enumerate(zip(pts,np.roll(pts,-1,axis=0))):
+            start,end=gp.gp_Pnt(*a,0),gp.gp_Pnt(*b,0)
+            rise=item.get("arcs",{}).get(str(j),0.)
+            if abs(rise)>1e-8:
+                delta=b-a
+                mid=(a+b)/2+rise*np.array([-delta[1],delta[0]])/np.linalg.norm(delta)
+                curve=GC.GC_MakeArcOfCircle(start,gp.gp_Pnt(*mid,0),end)
+                if not curve.IsDone():
+                    raise ValueError("Ошибка дуги эскиза")
+                edge=Build.BRepBuilderAPI_MakeEdge(curve.Value()).Edge()
+            else:
+                edge=Build.BRepBuilderAPI_MakeEdge(start,end).Edge()
+            builder.Add(edge)
+        wire=builder.Wire()
+    face=Build.BRepBuilderAPI_MakeFace(wire,True)
+    if not face.IsDone() or not BRepCheck.BRepCheck_Analyzer(face.Face()).IsValid():
+        raise ValueError("Проверьте замыкание и самопересечения контура")
+    return face.Face()
 
 
 def primitive(item, folder):
@@ -24,16 +62,7 @@ def primitive(item, folder):
     elif kind=="cylinder":
         shape = BRepPrimAPI.BRepPrimAPI_MakeCylinder(d["r"],d["h"]).Shape()
     elif kind=="prism":
-        poly=Build.BRepBuilderAPI_MakePolygon()
-        for x,y in item["outline"]:
-            poly.Add(gp.gp_Pnt(x,y,0))
-        poly.Close()
-        if not poly.IsDone() or len(set(map(tuple,item["outline"])))!=len(item["outline"]):
-            raise ValueError("Контур должен содержать разные вершины")
-        face=Build.BRepBuilderAPI_MakeFace(poly.Wire(),True)
-        if not face.IsDone() or not BRepCheck.BRepCheck_Analyzer(face.Face()).IsValid():
-            raise ValueError("Эскиз должен образовывать простой замкнутый контур без самопересечений")
-        shape=BRepPrimAPI.BRepPrimAPI_MakePrism(face.Face(),gp.gp_Vec(0,0,d["h"])).Shape()
+        shape=BRepPrimAPI.BRepPrimAPI_MakePrism(sketch_face(item),gp.gp_Vec(0,0,d["h"])).Shape()
     elif kind=="cad":
         path = folder/item["asset"]
         if path.suffix==".brep":
@@ -62,6 +91,27 @@ def primitive(item, folder):
         if not boolean.IsDone() or not list(components(boolean.Shape(),TopAbs.TopAbs_SOLID)):
             raise ValueError("Не удалось выполнить срез тела")
         shape = boolean.Shape()
+    for op in item.get("operations",[]):
+        if op.get("suppressed"):
+            continue
+        if op["kind"]=="section":
+            origin=np.array(op["origin"],dtype=float)
+            normal=np.array(op["normal"],dtype=float)
+            normal/=np.linalg.norm(normal)
+            plane=gp.gp_Pln(gp.gp_Pnt(*origin),gp.gp_Dir(*normal))
+            face=Build.BRepBuilderAPI_MakeFace(plane).Face()
+            tool=BRepPrimAPI.BRepPrimAPI_MakeHalfSpace(face,gp.gp_Pnt(*(origin-normal))).Solid()
+            boolean=BRepAlgoAPI.BRepAlgoAPI_Common(shape,tool)
+        else:
+            tool=transformed(primitive(op["operand"],folder),op["basis"],op["offset"])
+            constructor={"union":BRepAlgoAPI.BRepAlgoAPI_Fuse,"subtract":BRepAlgoAPI.BRepAlgoAPI_Cut,
+                         "intersect":BRepAlgoAPI.BRepAlgoAPI_Common}[op["kind"]]
+            boolean=constructor(shape,tool)
+        if not boolean.IsDone() or not list(components(boolean.Shape(),TopAbs.TopAbs_SOLID)):
+            raise ValueError("Операция не образует объёмного тела. Проверьте положение и размеры.")
+        shape=boolean.Shape()
+        if not BRepCheck.BRepCheck_Analyzer(shape).IsValid():
+            raise ValueError("Операция образовала некорректное тело")
     return shape
 
 

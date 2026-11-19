@@ -16,6 +16,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"tools"))
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
 import cad_desktop as ui
 import cad_scene as m
+import cad_topology as topo
 from cad_geometry import visual_geometry,export_body
 
 
@@ -119,15 +120,15 @@ class DesktopTests(unittest.TestCase):
         p,light,s=win.scene["objects"]
         light.update(kind="area",dims={"w":8.,"d":7.})
         side=m.node("screen",260.)
-        side["rot"]=[0,90,0]
-        side["pos"]=[25.,0.,285.]
+        side["rot"]=topo.euler(m.rotation(s)@m.rotation({"rot":[0,90,0]}))
+        side["pos"]=(np.array(s["pos"])+m.rotation(s)@np.array([25.,0.,25.])).tolist()
         win.mutate(lambda:win.scene["objects"].append(side))
         self.assertTrue(win.actions["trace"].isEnabled())
         win.ray_count,win.resolution=16000,48
         win.trace()
         self.finished()
         self.assertEqual(len(win.result[1]["screens"]),2)
-        side["pos"]=[0,0,260]
+        side["pos"]=s["pos"][:]
         win.refresh()
         self.assertFalse(win.actions["trace"].isEnabled())
 
@@ -163,11 +164,12 @@ class DesktopTests(unittest.TestCase):
         screen["parent"]=plate["id"]
         source["parent"]=screen["id"]
         old=m.relative(plate,screen)
+        original_source=m.relative(plate,source)[0]
         m.move(win.scene,plate,[25.,7.,3.],[20.,35.,12.])
         new=m.relative(plate,screen)
         np.testing.assert_allclose(new[0],old[0],atol=1e-8)
         np.testing.assert_allclose(new[1],old[1],atol=1e-8)
-        np.testing.assert_allclose(m.relative(plate,source)[0],[0,0,-600],atol=1e-8)
+        np.testing.assert_allclose(m.relative(plate,source)[0],original_source,atol=1e-8)
         plate["parent"]=source["id"]
         with self.assertRaises(ValueError):
             m.validate(win.scene)
@@ -204,8 +206,10 @@ class DesktopTests(unittest.TestCase):
         win=self.win
         plate,_,screen=win.scene["objects"]
         other=m.node("screen",260.)
+        other["rot"]=screen["rot"][:]
+        center=np.array(screen["pos"])
         for j,s in enumerate([screen,other]):
-            s["pos"][0]=(-1 if not j else 1)*12.5
+            s["pos"]=(center+m.rotation(screen)[:,0]*(-12.5 if j==0 else 12.5)).tolist()
             s["dims"]={"w":25.,"d":40.}
             img=self.root/f"{j}.png"
             x,y=np.meshgrid(np.linspace(-1,1,40),np.linspace(-1,1,64))

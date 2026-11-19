@@ -11,12 +11,14 @@ from cad_scene import SOLIDS, rotation
 class View(QWidget):
     picked=Signal(str)
     dragged=Signal(str,object,bool)
+    subpicked=Signal(str,object,object,float)
 
     def __init__(self):
         super().__init__()
         self.setMinimumSize(340,270)
         self.items=[]
         self.geometry={}
+        self.consumed=set()
         self.errors=set()
         self.selected=None
         self.yaw,self.pitch=36.,26.
@@ -26,6 +28,9 @@ class View(QWidget):
         self.color_relief=False
         self.press=None
         self.moving=None
+        self.move_mode=False
+        self.pick_mode="object"
+        self.highlights=[]
         self.hit=None
         self.screen_hits=[]
         self.setToolTip("ЛКМ — выбор · ПКМ — вращение · СКМ — панорама · колесо — масштаб · Shift+ЛКМ — перемещение")
@@ -90,7 +95,7 @@ class View(QWidget):
         self.screen_hits=[]
         for idx,item in enumerate(self.items,1):
             key=item["id"]
-            if key not in self.geometry:
+            if key not in self.geometry or item.get("hidden") or key in self.consumed:
                 continue
             xyz,tri,_=self.geometry[key]
             pt=self.project(xyz @ rotation(item).T+item["pos"])
@@ -138,7 +143,7 @@ class View(QWidget):
                 continue
             pt=self.project(self.vertices(item))
             x,y=self.project(item["pos"])[:2]
-            color="#bb4b40" if item["id"] in self.errors else ("#c98524" if kind in ("point","area") else "#407e9b")
+            color="#bb4b40" if item["id"] in self.errors else ("#9b6416" if kind in ("point","area","sun") else "#407e9b")
             p.setPen(QPen(QColor(color),2 if item["id"]==self.selected else 1.4))
             if kind in ("screen","area"):
                 polygon=QPolygonF([QPointF(x,y) for x,y in pt[:,:2]])
@@ -146,12 +151,19 @@ class View(QWidget):
                 p.drawPolygon(polygon)
                 p.setBrush(Qt.NoBrush)
                 self.screen_hits.append((idx,polygon))
-            if kind in ("point","area"):
+            if kind in ("point","area","sun"):
                 p.setBrush(QColor("#f6c363"))
                 p.drawEllipse(QPointF(x,y),5,5)
                 p.setBrush(Qt.NoBrush)
             if -30<=x<=w and -20<=y<=h:
                 p.drawText(QPointF(x+10,y-10),item["name"])
+        p.setPen(QPen(QColor("#bd5620"),2.4))
+        for poly in self.highlights:
+            pts=self.project(poly)
+            if len(pts)==1:
+                p.drawEllipse(QPointF(*pts[0,:2]),4,4)
+            else:
+                p.drawPolyline(QPolygonF([QPointF(*xy) for xy in pts[:,:2]]))
         p.setFont(QFont("Segoe UI",9))
         p.setPen(QColor("#526976"))
         p.drawText(18,26,"ОРТОГОНАЛЬНЫЙ ВИД")
@@ -177,7 +189,7 @@ class View(QWidget):
             if polygon.containsPoint(pos,Qt.OddEvenFill):
                 return self.items[idx-1]["id"]
         for item in self.items:
-            if item["kind"]=="point" and np.linalg.norm(self.project(item["pos"])[:2]-[pos.x(),pos.y()])<12:
+            if item["kind"] in ("point","sun") and np.linalg.norm(self.project(item["pos"])[:2]-[pos.x(),pos.y()])<12:
                 return item["id"]
         x,y=int(pos.x()),int(pos.y())
         if self.hit is not None and 0<=y<self.hit.shape[0] and 0<=x<self.hit.shape[1] and self.hit[y,x]:
@@ -189,10 +201,17 @@ class View(QWidget):
         self.last=self.press
         if event.button()==Qt.LeftButton:
             key=self.at(self.press)
+            if self.pick_mode!="object" and not self.move_mode and not event.modifiers()&Qt.ShiftModifier:
+                key=key or self.selected
+                if key:
+                    xy=np.array([self.press.x()-self.width()/2,self.press.y()-self.height()/2])
+                    origin=self.center+xy@self.basis()[:2]/self.scale
+                    self.subpicked.emit(key,origin,self.basis()[2],10/self.scale)
+                return
             if key:
                 self.picked.emit(key)
                 obj=next(i for i in self.items if i["id"]==key)
-                if event.modifiers()&Qt.ShiftModifier and not obj["locked"]:
+                if (self.move_mode or event.modifiers()&Qt.ShiftModifier) and not obj["locked"] and "parent" not in obj:
                     self.moving=(key,np.array(obj["pos"]))
 
     def mouseMoveEvent(self,event):

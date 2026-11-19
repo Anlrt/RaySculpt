@@ -16,6 +16,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 SOLIDS = {"plate", "box", "sphere", "cylinder", "prism", "cad", "mesh"}
 LABELS = {"plate":"Оптическая пластина", "box":"Блок", "sphere":"Сфера", "cylinder":"Цилиндр",
+          "sun":"Солнечный свет",
           "screen":"Экран", "point":"Точечный источник", "area":"Прямоугольный источник",
           "cad":"Тело CAD", "mesh":"Полигональная модель", "prism":"Выдавливание"}
 DIMS = {"plate":{"w":40., "h":8.}, "box":{"w":40., "d":32., "h":24.},
@@ -37,8 +38,10 @@ def node(kind, z=0.):
 
 
 def new_scene(catalog=None):
-    return dict(version=1, materials=deepcopy(BUILTINS | (catalog or {})),
-                objects=[node("plate"), node("point",-600.), node("screen",260.)])
+    objects=[node("plate"),node("point"),node("screen")]
+    for item,x in zip(objects,(0.,-240.,125.)):
+        item.update(pos=[x,0.,25.],rot=[90.,0.,90.])
+    return dict(version=2, materials=deepcopy(BUILTINS | (catalog or {})),objects=objects)
 
 
 def rotation(item):
@@ -107,7 +110,7 @@ def keys(scene):
 
 
 def validate(scene):
-    if scene["version"] != 1:
+    if scene["version"] not in (1,2):
         raise ValueError("Неизвестная версия проекта")
     for m in scene["materials"].values():
         validate_material(m)
@@ -131,8 +134,19 @@ def validate(scene):
                 raise ValueError("Размер должен быть положительным")
         if k=="prism":
             points=np.array(i["outline"],dtype=float)
-            if points.ndim!=2 or points.shape[1]!=2 or len(points)<3 or not np.isfinite(points).all():
+            if "circle" in i:
+                if len(i["circle"])!=3 or not all(math.isfinite(v) for v in i["circle"]) or i["circle"][2]<=0:
+                    raise ValueError("Некорректная окружность")
+            elif points.ndim!=2 or points.shape[1]!=2 or len(points)<3 or not np.isfinite(points).all():
                 raise ValueError("Проверьте координаты замкнутого эскиза")
+        for op in i.get("operations",[]):
+            if k not in ("box","sphere","cylinder","prism","cad"):
+                raise ValueError("История построений доступна для объёмного CAD-тела")
+            if op["kind"]=="section":
+                if any(len(op[k])!=3 or not all(math.isfinite(v) for v in op[k]) for k in ("origin","normal")) or np.linalg.norm(op["normal"])<1e-9:
+                    raise ValueError("Проверьте плоскость сечения")
+            elif op["kind"] not in ("union","intersect","subtract") or op.get("tool") not in ids:
+                raise ValueError("Отсутствует тело для булевой операции")
         if k in SOLIDS:
             index(scene,i)
         if k in ("cad","mesh") and "asset" not in i:
@@ -200,9 +214,15 @@ def load_scene(path, folder):
     return scene
 
 
+def consumed_tools(scene):
+    return {op["tool"] for i in scene["objects"] for op in i.get("operations",[])
+            if "tool" in op and not op.get("suppressed")}
+
+
 def optical_setup(scene):
-    solids = [i for i in scene["objects"] if i["kind"] in SOLIDS and not i.get("reference")]
-    lights = [i for i in scene["objects"] if i["kind"] in ("point","area")]
+    consumed=consumed_tools(scene)
+    solids = [i for i in scene["objects"] if i["kind"] in SOLIDS and not i.get("reference") and i["id"] not in consumed]
+    lights = [i for i in scene["objects"] if i["kind"] in ("point","area","sun")]
     screens = [i for i in scene["objects"] if i["kind"]=="screen"]
     if len(solids)!=1 or solids[0]["kind"]!="plate":
         raise ValueError("Для оптического расчёта в сцене нужна одна оптическая пластина")
@@ -257,7 +277,10 @@ def diagnostics(scene):
             issues.append((False,[source["id"]],"Источник повёрнут от центра пластины. Проверьте его направление."))
     else:
         extent = 0
-    if p[2]-extent>=0:
+    if source["kind"]=="sun":
+        if axes[2,2]<=0:
+            issues.append((True,[source["id"]],"Направьте солнечный свет на входную грань пластины."))
+    elif p[2]-extent>=0:
         issues.append((True,[source["id"]],"Источник должен освещать входную грань. Переместите его перед пластиной по локальной оси Z."))
     elif p[2]+extent>=0:
         issues.append((False,[source["id"]],"Часть площадного источника выходит за плоскость входной грани."))
@@ -287,7 +310,7 @@ def diagnostics(scene):
 def trace_settings(scene, resolution=256, rays=2000000):
     plate, lamp, screens = optical_setup(scene)
     c,b = relative(plate,lamp)
-    values = [plate["dims"]["w"],plate["dims"]["h"],index(scene,plate),rays,int(lamp["kind"]=="area"),
+    values = [plate["dims"]["w"],plate["dims"]["h"],index(scene,plate),rays,{"point":0,"area":1,"sun":2}[lamp["kind"]],
               *c,*b[:,0],*b[:,1],lamp["dims"].get("w",0),lamp["dims"].get("d",0),len(screens)]
     for screen in screens:
         c,b = relative(plate,screen)
