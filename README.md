@@ -4,6 +4,19 @@ Windows desktop CAD for designing transparent shapes that project monochrome
 caustic images onto one or more receiver surfaces. The Russian desktop editor
 uses Qt for Python, Open CASCADE geometry and a native multithreaded C++ tracer.
 
+## Лицензия RaySculpt
+
+Оригинальный программный код RaySculpt распространяется по **PolyForm Noncommercial
+1.0.0**. Для разрешённых лицензией целей, включая личные некоммерческие проекты,
+код можно использовать, изменять и распространять. При передаче копии сохраните
+текст или официальный адрес лицензии и предусмотренные ею уведомления.
+[Текст в репозитории](LICENSE) · [Официальные условия](https://polyformproject.org/licenses/noncommercial/1.0.0)
+
+Сторонние библиотеки и изображения сохраняют собственные условия. Патентная
+оговорка лицензии охватывает только те права, которыми вправе распоряжаться
+лицензиар. Сведения о компонентах и патентных публикациях приведены в
+[перечне источников](THIRD_PARTY_NOTICES.md).
+
 ## Запуск редактора
 
 Готовые сборки Windows x64 доступны в [релизах RaySculpt](https://github.com/Anlrt/RaySculpt/releases).

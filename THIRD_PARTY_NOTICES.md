@@ -1,5 +1,9 @@
 # Sources and third-party components
 
+RaySculpt's original software is offered under the
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0).
+Third-party components and artwork retain their respective terms.
+
 The prototype uses the C++ standard library and the [Windows Imaging Component](https://learn.microsoft.com/en-us/windows/win32/wic/-wic-creating-decoder)
 provided by Windows. No third-party source code has been copied into the
 repository.
@@ -16,7 +20,8 @@ Research references that informed the design:
 The optional photographic workflow imports [NumPy](https://numpy.org/),
 [OpenCV](https://opencv.org/) and [Pillow](https://python-pillow.org/).
 NumPy uses the BSD-3-Clause license, OpenCV 4.5 and later uses Apache-2.0,
-and Pillow uses the HPND license. These libraries are installed separately.
+and Pillow 12.0.0 specifies [MIT-CMU](https://github.com/python-pillow/Pillow/blob/12.0.0/pyproject.toml).
+These libraries are installed separately.
 The full-frame verification used NumPy 2.3.4, OpenCV 4.10.0 and Pillow 12.0.0.
 
 Smooth solid exchange uses [cadquery-ocp-novtk](https://pypi.org/project/cadquery-ocp-novtk/)
@@ -54,3 +59,15 @@ Subshape selection, BREP validity, distance queries and Boolean operations use
 the installed Open CASCADE bindings listed above. The Windows package contains
 the project code, the compiled project engine and the examples. The launcher
 obtains the dependencies as wheels, including their upstream notices, using pip.
+
+## Third-party patent references
+
+EPFL lists two patent families relevant to computational caustic design,
+*Design of a refractive surface* (EP2963464B1, US10732405B2) and *Method of
+producing a reflective or refractive surface* (EP2711745B1, US9576553B2).
+The PolyForm patent grant extends only to claims the software licensor can
+license. Assessing a particular implementation or manufactured optic requires
+considering the relevant claims and their status in the country of use.
+[EPFL patent list](https://www.epfl.ch/labs/gcm/tech-transfer/) ·
+[European patent specification](https://data.epo.org/publication-server/rest/v1.2/publication-dates/20170823/patents/EP2963464NWB1/document.html) ·
+[US patent claims](https://patents.google.com/patent/US10732405B2/en#claims)
