@@ -15,13 +15,13 @@ import shutil
 from uuid import uuid4
 
 import numpy as np
-from PIL import Image, ImageOps
 from PySide6 import QtCore as C, QtGui as G, QtWidgets as W
 from PySide6.QtCore import Qt
 
 import cad_scene as model
 import cad_topology as topo
 from cad_commands import ModelingCommands
+from cad_compare import Comparison, TargetDialog, comparisons
 from cad_geometry import visual_geometry
 from cad_view import View
 from export_plate import Profile
@@ -48,9 +48,7 @@ QTabBar::tab:selected {background:#fff;color:#135a7e}
 QStatusBar {background:#e4ecf1;color:#2f5266}
 QSplitter::handle {background:#d1dce2}
 """
-ICONS={"new":W.QStyle.SP_FileIcon,"open":W.QStyle.SP_DialogOpenButton,"save":W.QStyle.SP_DialogSaveButton,
-       "import":W.QStyle.SP_ArrowDown,"export":W.QStyle.SP_ArrowUp,"trace":W.QStyle.SP_MediaPlay,
-       "cancel":W.QStyle.SP_MediaStop,"design":W.QStyle.SP_BrowserReload,"library":W.QStyle.SP_FileDialogDetailedView}
+ICON_DIR=ROOT/"tools/icons"
 
 
 def setup_style(app):
@@ -122,8 +120,10 @@ class Window(ModelingCommands,W.QMainWindow):
         self.saved=self.snapshot()
         self.cache={}
         self.revision=0
+        self.document_epoch=0
         self.proc=None
         self.result=None
+        self.result_signature=None
         self.optical_issues=[]
         self.events=[]
         self.drag_start=None
@@ -136,16 +136,22 @@ class Window(ModelingCommands,W.QMainWindow):
         result_layout=W.QVBoxLayout(self.result_page)
         self.screen_choice=W.QComboBox()
         self.screen_choice.currentIndexChanged.connect(self.show_image)
-        self.picture=W.QLabel("Выполните проверку проекции")
-        self.picture.setAlignment(Qt.AlignCenter)
-        self.picture.setMinimumSize(128,128)
+        self.picture=Comparison()
+        self.result_status=W.QLabel("Выполните проверку проекции")
         select_result=W.QHBoxLayout()
         select_result.addWidget(self.screen_choice,1)
-        save_result=W.QPushButton("Сохранить проекцию…")
-        save_result.clicked.connect(lambda:self.guard(self.save_projection))
-        select_result.addWidget(save_result)
+        reset=W.QPushButton("Вписать")
+        reset.clicked.connect(self.picture.reset)
+        select_result.addWidget(reset)
+        self.save_result=W.QPushButton("Сохранить проекцию…")
+        self.save_result.clicked.connect(lambda:self.guard(self.save_projection))
+        select_result.addWidget(self.save_result)
         result_layout.addLayout(select_result)
+        result_layout.addWidget(self.result_status)
         result_layout.addWidget(self.picture,1)
+        self.legend=W.QLabel()
+        self.legend.setWordWrap(True)
+        result_layout.addWidget(self.legend)
         self.tabs.addTab(self.result_page,"Проекция")
         self.setCentralWidget(self.tabs)
         self.tree=W.QTreeWidget()
@@ -182,8 +188,8 @@ class Window(ModelingCommands,W.QMainWindow):
 
     def act(self,menu,name,fn,shortcut=None,key=None,bar=None):
         a=G.QAction(name,self)
-        if key in ICONS:
-            a.setIcon(self.style().standardIcon(ICONS[key]))
+        if key and (ICON_DIR/(key+".svg")).is_file():
+            a.setIcon(G.QIcon(str(ICON_DIR/(key+".svg"))))
         if shortcut:
             a.setShortcut(shortcut)
         a.triggered.connect(lambda checked=False:self.guard(fn))
@@ -199,7 +205,7 @@ class Window(ModelingCommands,W.QMainWindow):
                                    ("Файл","Правка","Модель","Оптика","Вид")]
         bar=self.addToolBar("Команды")
         bar.setMovable(False)
-        bar.setIconSize(C.QSize(17,17))
+        bar.setIconSize(C.QSize(22,22))
         bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.act(file,"Создать",self.new,"Ctrl+N","new",bar)
         self.act(file,"Открыть…",self.open,"Ctrl+O","open",bar)
@@ -215,9 +221,11 @@ class Window(ModelingCommands,W.QMainWindow):
         self.act(edit,"Удалить объект",self.remove,"Delete","delete")
         move=self.act(edit,"Переместить",self.toggle_move,"M","move",bar)
         move.setCheckable(True)
-        move.setToolTip("Перемещать тело левой кнопкой мыши (M). Точное положение — в параметрах объекта.")
+        move.setToolTip("Стрелки X, Y, Z перемещают вдоль оси. Перетаскивание тела перемещает в плоскости вида (M).")
         bar.addSeparator()
         insert=W.QToolButton()
+        insert.setIcon(G.QIcon(str(ICON_DIR/"solid.svg")))
+        insert.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         insert.setText("Добавить тело")
         insert.setPopupMode(W.QToolButton.InstantPopup)
         primitives=W.QMenu(insert)
@@ -233,16 +241,36 @@ class Window(ModelingCommands,W.QMainWindow):
         self.act(solid,"Зафиксировать относительно…",self.mate,key="mate")
         self.act(solid,"Снять связь",self.unmate,key="unmate")
         self.act(solid,"Материалы…",self.materials,key="library",bar=bar)
-        for kind in ("point","area","sun","screen"):
+        self.optics_bar=self.addToolBar("Оптика")
+        self.insertToolBarBreak(self.optics_bar)
+        self.optics_bar.setMovable(False)
+        self.optics_bar.setIconSize(C.QSize(22,22))
+        self.optics_bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        source=W.QToolButton()
+        source.setText("Источник")
+        source.setIcon(G.QIcon(str(ICON_DIR/"light.svg")))
+        source.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        source.setPopupMode(W.QToolButton.InstantPopup)
+        sources=W.QMenu(source)
+        for kind in ("point","area","sun"):
+            self.act(sources,model.LABELS[kind],partial(self.set_source,kind))
             self.act(optics,"Добавить · "+model.LABELS[kind],partial(self.add,kind))
-        self.act(optics,"Изображение экрана…",self.target)
+        source.setToolTip("Выбрать тип источника в оптической установке")
+        source.setMenu(sources)
+        self.optics_bar.addWidget(source)
+        self.act(optics,"Добавить экран",partial(self.add,"screen"),key="screen",bar=self.optics_bar)
+        self.act(optics,"Назначить цель…",self.target,key="target",bar=self.optics_bar)
         self.act(optics,"3D-цель и углы поворота…",self.turntable)
         self.act(optics,"Снять 3D-цель",self.clear_turntable,key="clear3d")
-        self.act(optics,"Параметры проверки…",self.settings)
+        self.act(optics,"Подобрать расстояния…",self.placement,key="placement",bar=self.optics_bar)
+        settings=self.act(optics,"Параметры проверки…",self.settings,key="setup")
+        self.optics_bar.addSeparator()
         self.act(optics,"Выровнять по оси пластины",self.align,key="align")
-        self.act(optics,"Построить рельеф…",self.design,key="design",bar=bar)
-        self.act(optics,"Проверить проекцию",self.trace,"F5","trace",bar)
-        self.act(optics,"Остановить",self.cancel,key="cancel",bar=bar)
+        self.act(optics,"Построить рельеф…",self.design,key="design",bar=self.optics_bar)
+        self.act(optics,"Проверить проекцию",self.trace,"F5","trace",self.optics_bar)
+        self.act(optics,"Сравнить",lambda:self.tabs.setCurrentIndex(1),key="compare",bar=self.optics_bar)
+        self.optics_bar.addAction(settings)
+        self.act(optics,"Остановить",self.cancel,key="cancel",bar=self.optics_bar)
         self.act(view,"Вписать сцену",lambda:self.cam.fit(True),"F")
         self.act(view,"Приблизить выбранное",self.cam.fit,"Shift+F")
         for name,a,b in (("Изометрия",36,26),("Сверху",0,90),("Спереди",0,0),("Справа",90,0)):
@@ -262,8 +290,9 @@ class Window(ModelingCommands,W.QMainWindow):
         if self.cam.move_mode:
             self.pick_selector.setCurrentIndex(0)
         self.cam.setCursor(Qt.OpenHandCursor if self.cam.move_mode else Qt.ArrowCursor)
+        self.cam.update()
         if self.cam.move_mode:
-            self.statusBar().showMessage("Перетащите тело левой кнопкой. Shift+ЛКМ работает и в режиме выбора.",6000)
+            self.statusBar().showMessage("Тяните стрелку X, Y или Z вдоль оси, либо само тело в плоскости вида.",6000)
 
     def grid(self):
         self.cam.show_grid=not self.cam.show_grid
@@ -301,16 +330,13 @@ class Window(ModelingCommands,W.QMainWindow):
         self.history.append(old)
         self.history=self.history[-80:]
         self.future.clear()
-        self.invalidate()
+        self.invalidate(old)
 
-    def invalidate(self):
+    def invalidate(self,old=None):
         self.revision+=1
         self.inspection=[]
-        self.optical_issues=[]
-        if self.result:
-            self.result=None
-            self.screen_choice.clear()
-            self.picture.setText("Сцена изменена. Выполните проверку проекции.")
+        if old is None or model.optical_signature(json.loads(old))!=model.optical_signature(self.scene):
+            self.optical_issues=[]
 
     def mutate(self,fn):
         old=self.snapshot()
@@ -331,14 +357,14 @@ class Window(ModelingCommands,W.QMainWindow):
         if self.history:
             self.future.append(self.snapshot())
             self.scene=json.loads(self.history.pop())
-            self.invalidate()
+            self.invalidate(self.future[-1])
             self.refresh()
 
     def redo(self):
         if self.future:
             self.history.append(self.snapshot())
             self.scene=json.loads(self.future.pop())
-            self.invalidate()
+            self.invalidate(self.history[-1])
             self.refresh()
 
     def obj(self,key=None):
@@ -433,7 +459,16 @@ class Window(ModelingCommands,W.QMainWindow):
         blocked=any(error for error,_,_ in issues)
         obj=self.obj() or {}
         self.actions["trace"].setEnabled(not busy and not blocked)
-        self.actions["design"].setEnabled(not busy and not blocked)
+        screens=[i for i in items if i["kind"]=="screen"]
+        turn="turntable" in self.scene
+        missing=[s for s in screens if "image" not in s and not turn]
+        self.actions["design"].setEnabled(not busy and not blocked and not missing)
+        self.actions["target"].setEnabled(not busy and bool(screens) and not turn)
+        self.actions["screen"].setEnabled(not turn)
+        self.actions["placement"].setEnabled(not busy and bool(screens))
+        self.actions["compare"].setEnabled(self.result is not None)
+        self.save_result.setEnabled(self.result is not None)
+        self.update_result_status()
         self.actions["cancel"].setEnabled(busy)
         self.actions["clear3d"].setEnabled("turntable" in self.scene)
         self.actions["export"].setEnabled(not busy and obj.get("kind") in model.SOLIDS)
@@ -448,7 +483,13 @@ class Window(ModelingCommands,W.QMainWindow):
         self.actions["delete"].setEnabled(bool(obj) and not obj.get("locked"))
         self.setWindowTitle((self.path.stem if self.path else "Новый проект")
                             +(" *" if self.snapshot()!=self.saved else "")+"  —  Caustic CAD "+VERSION)
-        status=issues[0][2] if issues else (self.optical_issues[0][1] if self.optical_issues else "Готово к расчёту")
+        status=next((msg for bad,_,msg in issues if bad),None)
+        if status is None:
+            if missing:
+                status=f'Назначьте цель для «{missing[0]["name"]}». Проверка текущей пластины доступна (F5).'
+            else:
+                status=issues[0][2] if issues else (self.optical_issues[0][1] if self.optical_issues else "Готово к расчёту")
+        self.actions["design"].setToolTip(status if blocked or missing else "Рассчитать поверхность по назначенным целям")
         self.status.setText(self.job_label if busy else status)
 
     def properties(self):
@@ -497,6 +538,10 @@ class Window(ModelingCommands,W.QMainWindow):
             reference.setEnabled(available)
             reference.toggled.connect(lambda v:self.guard(lambda:setval("reference",v)))
             form.addRow(reference)
+            if obj.get("reference") and available:
+                note=W.QLabel("Служит для компоновки. Лучи проходят сквозь это тело.")
+                note.setWordWrap(True)
+                form.addRow(note)
             heading("Материал")
             combo=W.QComboBox()
             for key,m in self.scene["materials"].items():
@@ -532,6 +577,10 @@ class Window(ModelingCommands,W.QMainWindow):
             b=W.QPushButton("Изменить углы…" if turn else ("Заменить изображение…" if "image" in obj else "Назначить изображение…"))
             b.clicked.connect(lambda:self.guard(self.turntable if turn else self.target))
             form.addRow(b)
+            if obj.get("image"):
+                mapping=W.QPushButton("Размещение изображения…")
+                mapping.clicked.connect(lambda:self.guard(lambda:self.place_target(obj,self.assets/obj["image"])))
+                form.addRow(mapping)
         heading("Положение")
         if obj.get("parent"):
             form.addRow("Связано с",W.QLabel(self.obj(obj["parent"])["name"]))
@@ -588,6 +637,19 @@ class Window(ModelingCommands,W.QMainWindow):
         self.mutate(lambda:self.scene["objects"].append(obj))
         self.tabs.setCurrentIndex(0)
         self.cam.fit(True)
+
+    def set_source(self,kind):
+        lamps=[i for i in self.scene["objects"] if i["kind"] in ("point","area","sun")]
+        if not lamps:
+            return self.add(kind)
+        lamp=self.obj() if self.obj() in lamps else lamps[0]
+        if lamp["kind"]!=kind:
+            def change():
+                if lamp["name"]==model.LABELS[lamp["kind"]]:
+                    lamp["name"]=model.LABELS[kind]
+                lamp.update(kind=kind,dims=model.DIMS.get(kind,{}).copy())
+            self.mutate(change)
+        self.select(lamp["id"])
 
     def remove(self):
         if self.active_step:
@@ -706,6 +768,12 @@ class Window(ModelingCommands,W.QMainWindow):
         self.history.clear()
         self.future.clear()
         self.invalidate()
+        self.result=None
+        self.result_signature=None
+        self.document_epoch+=1
+        self.screen_choice.clear()
+        self.picture.set_images([])
+        self.legend.clear()
         self.path=path
         self.selected=scene["objects"][0]["id"] if scene["objects"] else None
         self.saved=self.snapshot()
@@ -797,19 +865,30 @@ class Window(ModelingCommands,W.QMainWindow):
             raise ValueError("Сначала снимите 3D-цель в меню «Оптика»")
         obj=self.obj()
         if not obj or obj["kind"]!="screen":
-            raise ValueError("Выберите экран в дереве модели")
+            screens=[i for i in self.scene["objects"] if i["kind"]=="screen"]
+            obj=next((i for i in screens if "image" not in i),screens[0] if screens else None)
+        if obj is None:
+            raise ValueError("Добавьте экран")
         name,_=W.QFileDialog.getOpenFileName(self,"Изображение для экрана","","Изображения (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.pgm)")
         if not name:
             return
         path=Path(name)
-        with Image.open(path) as im:
-            width,height=ImageOps.exif_transpose(im).size
+        self.place_target(obj,path)
+
+    def place_target(self,obj,path):
+        dialog=TargetDialog(self,path,obj)
+        if dialog.exec()!=W.QDialog.Accepted:
+            return
+        mode=dialog.mode.currentData()
         key=model.store_asset(path,self.assets)
         def apply():
             obj["image"]=key
-            obj["dims"]["d"]=obj["dims"]["w"]*height/width
+            obj["image_fit"]="crop" if mode=="crop" else "fit"
+            if mode=="resize":
+                obj["dims"]["d"]=dialog.height_mm
         self.mutate(apply)
-        self.log("Пропорции экрана приведены к исходному изображению.")
+        self.select(obj["id"])
+        self.log(f'{obj["name"]} · {dialog.mode.currentText()}')
 
     def materials(self):
         dlg=W.QDialog(self)
@@ -927,6 +1006,8 @@ class Window(ModelingCommands,W.QMainWindow):
         self.job_label=label
         self.proc=proc
         revision=self.revision
+        epoch=self.document_epoch
+        signature=model.optical_signature(self.scene)
         output=bytearray()
         stopped=[False]
         self.stop_state=stopped
@@ -941,12 +1022,16 @@ class Window(ModelingCommands,W.QMainWindow):
             self.proc=None
             self.refresh()
             proc.deleteLater()
+            if task in ("trace","checked_trace","design","fit"):
+                changed=model.optical_signature(self.scene)!=signature
+            else:
+                changed=revision!=self.revision
             if stopped[0]:
                 self.log("Операция остановлена.")
             elif code or status==C.QProcess.CrashExit:
                 details=output.decode("utf-8",errors="replace").strip().splitlines()
                 self.log("Операция завершилась ошибкой. "+"\n".join(details[-6:]))
-            elif task!="export" and revision!=self.revision:
+            elif task!="export" and (epoch!=self.document_epoch or changed):
                 self.log("Сцена изменилась во время расчёта. Запустите расчёт для текущей версии.")
             else:
                 self.guard(callback)
@@ -999,6 +1084,7 @@ class Window(ModelingCommands,W.QMainWindow):
         if problems:
             raise ValueError(problems[0])
         plate,_,screens=model.optical_setup(self.scene)
+        screens=deepcopy(screens)
         rays,max_px=self.quality()
         out=self.work/uuid4().hex
         cfg=out.with_suffix(".txt")
@@ -1011,12 +1097,14 @@ class Window(ModelingCommands,W.QMainWindow):
                 self.show_inspection(json.loads(issues_file.read_text(encoding="utf-8")))
                 return
             report=json.loads((out/"report.json").read_text())
-            self.result=(out,report)
+            for i,(row,screen) in enumerate(zip(report["screens"],screens)):
+                row["screen"]=screen["id"]
+                if "image" in screen or self.scene.get("turntable"):
+                    row["target"]=f"target{i}.pgm"
+                if self.scene.get("turntable"):
+                    row["angle"]=0.
+            self.set_result(out,report)
             self.optical_issues=[]
-            self.screen_choice.clear()
-            self.screen_choice.addItems(names)
-            self.show_image()
-            self.tabs.setCurrentIndex(1)
             self.log(f'Проверено {report["rays"]:,} лучей при n = {report["n"]:g}. '
                      f'На экранах {report["hit"]:,}, мимо экранов {report["miss"]:,}, '
                      f'через боковую грань {report["side"]:,}, полное внутреннее отражение {report["tir"]:,}, '
@@ -1030,9 +1118,10 @@ class Window(ModelingCommands,W.QMainWindow):
             self.refresh()
         args=["trace-scene",str(cfg),str(profile),str(out)]
         nearby=model.potential_relief_collisions(self.scene)
-        if nearby:
-            self.worker("checked_trace","Проверка пересечений и проекции…",
+        if nearby or "turntable" in self.scene or any("image" in s for s in screens):
+            self.worker("checked_trace","Проверка проекции и целей…",
                         dict(scene=dict(objects=nearby),assets=str(self.assets),path=str(issues_file),
+                             screens=screens,turntable=self.scene.get("turntable"),resolution=max_px,out=str(out),
                              cli=str(CLI),args=args),finished)
         else:
             self.launch("trace","Проверка проекции…",CLI,args,out,finished)
@@ -1078,27 +1167,21 @@ class Window(ModelingCommands,W.QMainWindow):
                   "Детально":(448,512,640,36000000,2)}
         res,grid,mapsize,rays,passes=settings[quality.split(" ·")[0]]
         path=self.assets/screen["image"]
-        with Image.open(path) as im:
-            w,h=ImageOps.exif_transpose(im).size
-        if not np.isclose(screen["dims"]["w"]*h/w,screen["dims"]["d"],rtol=.005):
-            raise ValueError("Восстановите пропорции экрана по изображению, назначив его повторно.")
         out=self.work/uuid4().hex
         thick=plate["dims"]["h"]
         args=[ROOT/"tools/design_photo.py",path,"--out",out,"--grid",grid,"--map-size",mapsize,
               "--resolution",res,"--rays",rays,"--cells",grid,"--corrections",passes,
               "--index",model.index(self.scene,plate),"--plate",plate["dims"]["w"],"--thickness",thick,
-              "--width",screen["dims"]["w"],"--source",source,"--screen",dist,
+              "--width",screen["dims"]["w"],"--height",screen["dims"]["d"],"--image-fit",screen.get("image_fit","fit"),
+              "--source",source,"--screen",dist,
               "--max-relief",min(thick*.9,(dist-thick)*.9),"--formats","stl"]
         def finished():
             report=json.loads((out/"report.json").read_text())
-            self.mutate(lambda:self.attach_profile(plate,out/"surface.txt"))
-            self.log(f'Рельеф построен · n = {plate["design_n"]:g}, ошибка яркости (относительная RMS) '
+            self.mutate(lambda:self.attach_profile(self.obj(plate["id"]),out/"surface.txt"))
+            self.log(f'Рельеф построен · n = {self.obj(plate["id"])["design_n"]:g}, ошибка яркости (относительная RMS) '
                      f'{report["picture_relative_rmse"]:.3f}.')
-            self.result=(out,{"screens":[{"image":"03_projection.png"}]})
-            self.screen_choice.clear()
-            self.screen_choice.addItem(screen["name"])
-            self.show_image()
-            self.tabs.setCurrentIndex(1)
+            self.set_result(out,{"screens":[dict(screen=screen["id"],image="03_projection.png",
+                            target="01_monochrome.png",display_gain=1.)]})
         self.worker("design","Построение оптической поверхности…",dict(args=list(map(str,args))),finished)
 
     def turntable(self):
@@ -1122,6 +1205,7 @@ class Window(ModelingCommands,W.QMainWindow):
         def apply():
             self.scene["turntable"]=dict(asset=key,name=name,screen=screens[0]["id"],angles=values)
             screens[0].pop("image",None)
+            screens[0].pop("image_fit",None)
         self.mutate(apply)
         self.select(screens[0]["id"])
 
@@ -1135,23 +1219,56 @@ class Window(ModelingCommands,W.QMainWindow):
             out=folder/"result"
             report=json.loads((out/"validation.json").read_text())
             if report["final"]<report["initial"] and any(s["flux"]>0 for s in report["screens"]):
-                self.mutate(lambda:self.attach_profile(plate,out/"surface.txt"))
+                self.mutate(lambda:self.attach_profile(self.obj(plate["id"]),out/"surface.txt"))
             else:
                 self.log("Подбор не улучшил плоскую заготовку. Рельеф в модели сохранён.")
                 return
-            self.result=(out,report)
-            self.screen_choice.clear()
+            self.set_result(out,report)
             for row in report["screens"]:
                 tag=" · промежуточный вид" if row["intermediate"] else ""
                 name=f'{row["name"]} · {row["angle"]:g}°{tag}'
-                self.screen_choice.addItem(name)
                 self.log(f'{name} · ошибка яркости {row["error"]:.3f}, поток {row["flux"]:.5g}')
-            self.show_image()
-            self.tabs.setCurrentIndex(1)
             self.log(f'Эскизный подбор общей поверхности · {report["evaluations"]} оценок, '
                      f'критерий {report["initial"]:.4g} → {report["final"]:.4g}.')
         self.worker("fit","Эскизный подбор общей поверхности для всех целей…",
                     dict(scene=self.scene,assets=str(self.assets),folder=str(folder)),finished)
+
+    def set_result(self,out,report):
+        self.result=(out,report)
+        self.result_signature=model.optical_signature(self.scene)
+        self.screen_choice.blockSignals(True)
+        self.screen_choice.clear()
+        for row in report["screens"]:
+            obj=self.obj(row["screen"])
+            label=obj["name"] if obj else row.get("name","Экран")
+            row["screen_label"]=label
+            self.screen_choice.addItem(label)
+        self.screen_choice.blockSignals(False)
+        self.update_result_status()
+        self.show_image()
+        self.tabs.setCurrentIndex(1)
+        self.actions["compare"].setEnabled(True)
+        self.save_result.setEnabled(True)
+
+    def result_stale(self):
+        return self.result is not None and model.optical_signature(self.scene)!=self.result_signature
+
+    def update_result_status(self):
+        if not self.result:
+            self.result_status.setText("Выполните проверку проекции (F5)")
+            return
+        stale=self.result_stale()
+        self.result_status.setText("Предыдущий расчёт · оптическая схема изменилась. F5 — рассчитать заново."
+                                   if stale else "Расчёт соответствует текущей оптической схеме")
+        self.result_status.setStyleSheet("color:#864813;font-weight:600" if stale else "color:#316041")
+        for i,row in enumerate(self.result[1]["screens"]):
+            obj=self.obj(row["screen"])
+            label=obj["name"] if obj else row["screen_label"]
+            if "angle" in row:
+                label+=f' · {row["angle"]:g}°'
+                if row.get("intermediate"):
+                    label+=" · промежуточный вид"
+            self.screen_choice.setItemText(i,label)
 
     def show_image(self,*ignored):
         if not self.result:
@@ -1160,17 +1277,21 @@ class Window(ModelingCommands,W.QMainWindow):
         if idx<0:
             return
         out,report=self.result
-        path=out/report["screens"][idx]["image"]
-        pix=G.QPixmap(str(path))
-        self.picture.setPixmap(pix.scaled(max(160,self.tabs.width()-60),max(140,self.tabs.height()-115),
-                                          Qt.KeepAspectRatio,Qt.SmoothTransformation))
+        row=report["screens"][idx]
+        target=out/row["target"] if row.get("target") else None
+        self.picture.set_images(comparisons(out/row["image"],target,
+            gain=row.get("display_gain")))
+        self.legend.setText(("Синий — недостаток света, оранжевый — избыток, светлый — совпадение. "
+                            +("Экспозиция из расчёта." if "display_gain" in row else "Экспозиция подобрана для этого экрана."))
+                            if target else "Проверка светового пятна. У этого расчёта нет изображения для сравнения.")
 
     def save_projection(self):
         if not self.result:
             raise ValueError("Сначала выполните проверку проекции")
         out,report=self.result
         src=out/report["screens"][self.screen_choice.currentIndex()]["image"]
-        path,_=W.QFileDialog.getSaveFileName(self,"Сохранить проекцию","Проекция.png","PNG (*.png)")
+        title="Проекция предыдущего расчёта.png" if self.result_stale() else "Проекция.png"
+        path,_=W.QFileDialog.getSaveFileName(self,"Сохранить проекцию",title,"PNG (*.png)")
         if path:
             shutil.copyfile(src,path if Path(path).suffix else path+".png")
 

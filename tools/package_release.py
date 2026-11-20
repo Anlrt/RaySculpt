@@ -10,13 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def package(output):
     version = (ROOT / "VERSION").read_text(encoding="ascii").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:-dev)?", version):
         raise ValueError("Invalid release version")
     binary = ROOT / "build/Release/caustic_cli.exe"
     if not binary.is_file():
         raise FileNotFoundError(binary)
     files = [ROOT / name for name in ("Caustic CAD.cmd", "README.md", "CHANGELOG.md",
-                                      "THIRD_PARTY_NOTICES.md", "VERSION", "requirements.txt")]
+                                      "LICENSE", "THIRD_PARTY_NOTICES.md", "VERSION", "requirements.txt")]
+    files.extend((ROOT / "tools/icons").glob("*.svg"))
     files.extend(p for p in (ROOT / "tools").iterdir() if p.suffix in (".py", ".json") and p.name != "package_release.py")
     files.extend(p for p in (ROOT / "examples").iterdir() if p.is_file() and p.suffix != ".cpp")
     files.extend(p for p in (ROOT / "docs").iterdir() if p.is_file())

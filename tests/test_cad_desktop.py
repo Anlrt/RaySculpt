@@ -63,7 +63,8 @@ class DesktopTests(unittest.TestCase):
         geom=win.cam.geometry[plate["id"]]
         combo=next(c for c in win.props.findChildren(ui.W.QComboBox) if c.findData("sf11")>=0)
         combo.setCurrentIndex(combo.findData("sf11"))
-        self.assertIsNone(win.result)
+        self.assertTrue(win.result_stale())
+        self.assertIs(report1,win.result[1])
         self.assertIs(geom,win.cam.geometry[plate["id"]])
         win.trace()
         self.finished()
@@ -111,7 +112,10 @@ class DesktopTests(unittest.TestCase):
         pos=sphere["pos"].copy()
         win.drag(sphere["id"],[30,30,30],True)
         self.assertEqual(sphere["pos"],pos)
+        self.assertTrue(win.actions["trace"].isEnabled())
+        win.mutate(lambda:sphere.update(reference=False))
         self.assertFalse(win.actions["trace"].isEnabled())
+        self.assertIn(sphere["name"],win.status.text())
         win.mutate(lambda:sphere.update(reference=True))
         self.assertTrue(win.actions["trace"].isEnabled())
 
@@ -139,7 +143,7 @@ class DesktopTests(unittest.TestCase):
         gray=np.tile(np.linspace(85,215,80,dtype=np.uint8),(64,1))
         Image.fromarray(gray).save(path)
         screen["image"]=m.store_asset(path,win.assets)
-        screen["dims"]["d"]=40
+        screen["dims"]["d"]=52.35
         win.mutate(lambda:plate.update(material="bk7",line="546.1"))
         with patch.object(ui.W.QInputDialog,"getItem",return_value=("Эскиз · 96 пикселей",True)):
             win.design()
@@ -147,6 +151,8 @@ class DesktopTests(unittest.TestCase):
         self.assertIn("profile",plate,win.journal.toPlainText())
         self.assertEqual(plate["design_n"],1.51872)
         self.assertTrue((win.result[0]/"03_projection.png").is_file())
+        self.assertEqual((win.assets/plate["profile"]).read_text().splitlines()[0].split()[-1],"52.35")
+        self.assertEqual(win.picture.images[0].size(),win.picture.images[1].size())
 
     def test_custom_library(self):
         material=dict(name="Test",density=1.3,default="530",indices={"530":1.52},source="test")
@@ -157,6 +163,61 @@ class DesktopTests(unittest.TestCase):
             file=self.root/"library.ccad"
             m.save_scene(scene,self.root,file)
             self.assertEqual(m.load_scene(file,self.root)["materials"]["local-test"],material)
+
+    def test_place_target_preserves_screen_and_compares_snapshot(self):
+        from cad_targets import screen_target
+        win=self.win
+        screen=win.scene["objects"][2]
+        image=self.root/"portrait.png"
+        photo=np.full((100,80,3),255,dtype=np.uint8)
+        photo[:5]=0
+        Image.fromarray(photo).save(image)
+        self.assertFalse(win.actions["design"].isEnabled())
+        self.assertTrue(win.actions["trace"].isEnabled())
+        self.assertIn(screen["name"],win.status.text())
+        with patch.object(ui.W.QFileDialog,"getOpenFileName",return_value=(str(image),"")), \
+             patch.object(ui.TargetDialog,"exec",return_value=ui.W.QDialog.Accepted):
+            win.target()
+        self.assertEqual(win.selected,screen["id"])
+        self.assertEqual(screen["dims"],{"w":50.,"d":50.})
+        self.assertTrue(win.actions["design"].isEnabled())
+        for mode,edge in (("fit",0.),("crop",1.)):
+            goal=screen_target(image,(50,50),mode)
+            self.assertEqual(goal[25,0],edge)
+            self.assertEqual(goal[25,25],1.)
+        win.ray_count,win.resolution=32000,50
+        win.trace()
+        self.finished()
+        self.assertEqual(len(win.picture.images),3)
+        self.assertEqual(win.picture.images[0].toImage().pixelColor(0,25).red(),0)
+        win.mutate(lambda:screen.update(name="Портрет"))
+        self.assertFalse(win.result_stale())
+        self.assertEqual(win.screen_choice.currentText(),"Портрет")
+        win.mutate(lambda:screen.update(image_fit="crop"))
+        self.assertTrue(win.result_stale())
+        self.assertEqual(win.picture.images[0].toImage().pixelColor(0,25).red(),0)
+        win.undo()
+        self.assertFalse(win.result_stale())
+        win.replace(m.new_scene())
+        self.assertIsNone(win.result)
+        self.assertFalse(win.picture.images)
+
+    def test_explicit_resize_and_cancel(self):
+        win=self.win
+        screen=win.scene["objects"][2]
+        image=self.root/"portrait.png"
+        Image.new("RGB",(80,100),"white").save(image)
+        with patch.object(ui.TargetDialog,"exec",return_value=ui.W.QDialog.Rejected):
+            win.place_target(screen,image)
+        self.assertNotIn("image",screen)
+        def resize(dialog):
+            dialog.mode.setCurrentIndex(dialog.mode.findData("resize"))
+            return ui.W.QDialog.Accepted
+        with patch.object(ui.TargetDialog,"exec",resize):
+            win.place_target(screen,image)
+        self.assertEqual(screen["dims"],{"w":50.,"d":62.5})
+        win.undo()
+        self.assertNotIn("image",win.obj(screen["id"]))
 
     def test_rigid_relation(self):
         win=self.win
@@ -200,7 +261,16 @@ class DesktopTests(unittest.TestCase):
         entries=win.result[1]["screens"]
         self.assertEqual([r["angle"] for r in entries],[-8,0,8])
         self.assertTrue(entries[1]["intermediate"])
+        for i,row in enumerate(entries):
+            win.screen_choice.setCurrentIndex(i)
+            self.assertTrue((win.result[0]/row["target"]).is_file())
+            self.assertTrue(all(win.picture.images))
         self.assertTrue(all(r["flux"]>0 and math.isfinite(r["error"]) for r in entries))
+        win.ray_count,win.resolution=32000,48
+        win.trace()
+        self.finished()
+        self.assertEqual(win.result[1]["screens"][0]["angle"],0.)
+        self.assertTrue(all(win.picture.images))
 
     def test_fit_two_screens(self):
         win=self.win

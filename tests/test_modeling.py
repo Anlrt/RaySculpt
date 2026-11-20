@@ -78,6 +78,21 @@ class ModelingTests(unittest.TestCase):
             self.assertGreater(np.linalg.norm(np.array(obj["pos"]) - origin), 1)
             win.undo()
             np.testing.assert_allclose(win.obj()["pos"], origin)
+            for axis in range(3):
+                base,tip=win.cam.handles()[axis]
+                start=base+.82*(tip-base)
+                start=ui.C.QPoint(*np.rint(start).astype(int))
+                end=start+ui.C.QPoint(*np.rint(.4*(tip-base)).astype(int))
+                self.assertEqual(win.cam.handle_at(ui.C.QPointF(start)),axis)
+                QTest.mousePress(win.cam,ui.Qt.LeftButton,pos=start)
+                QTest.mouseMove(win.cam,end)
+                QTest.mouseRelease(win.cam,ui.Qt.LeftButton,pos=end)
+                delta=np.array(win.obj()["pos"])-origin
+                self.assertGreater(delta[axis],1)
+                np.testing.assert_allclose(np.delete(delta,axis),0)
+                win.undo()
+            win.mutate(lambda:win.obj().update(locked=True))
+            self.assertFalse(win.cam.handles())
         finally:
             win.saved = win.snapshot()
             win.close()

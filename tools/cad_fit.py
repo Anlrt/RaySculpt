@@ -3,12 +3,41 @@ import json
 from pathlib import Path
 import subprocess
 
-import cv2
 import numpy as np
 from PIL import Image
 
 from cad_scene import ROOT, optical_setup, trace_settings
-from design_photo import monochrome
+from cad_targets import screen_pixels, screen_target
+
+
+def target_mesh(assets,key,folder):
+    source=assets/key
+    if source.suffix==".obj":
+        return source
+    from cad_geometry import load_mesh,primitive,triangulate
+    if source.suffix==".stl":
+        xyz,tri=load_mesh(source)
+    else:
+        xyz,tri=triangulate(primitive(dict(kind="cad",asset=key,dims={}),assets))
+    path=folder/"target.obj"
+    with path.open("wb") as f:
+        np.savetxt(f,xyz,fmt="v %.15g %.15g %.15g")
+        np.savetxt(f,tri+1,fmt="f %d %d %d")
+    return path
+
+
+def write_target(assets,screen,resolution,path,mesh=None,angle=0.):
+    cols,rows=screen_pixels(screen["dims"]["w"],screen["dims"]["d"],resolution)
+    if mesh is not None:
+        subprocess.run([ROOT/"build/Release/caustic_cli.exe","render-target","--obj",mesh,"--angle",str(angle),
+                        "--elevation","0","--width",str(cols),"--height",str(rows),"--out",path],check=True)
+        with Image.open(path) as image:
+            return np.asarray(image).astype(float)/255
+    frame=screen_target(assets/screen["image"],(cols,rows),screen.get("image_fit","fit"))
+    with path.open("wb") as f:
+        f.write(f"P5\n{cols} {rows}\n65535\n".encode("ascii"))
+        f.write(np.rint(frame*65535).astype(">u2").tobytes())
+    return frame
 
 
 def fit(scene,assets,folder):
@@ -23,45 +52,11 @@ def fit(scene,assets,folder):
         raise ValueError("Суммарное разрешение целей превышает бюджет оптимизации")
     (folder/"scene.txt").write_text(trace_settings(scene,count,16000),encoding="ascii")
     (folder/"angles.txt").write_text("7 "+str(len(angles))+" "+" ".join(map(str,angles)),encoding="ascii")
-    source_obj=None
-    if turn:
-        source_obj=assets/turn["asset"]
-        if source_obj.suffix!=".obj":
-            from cad_geometry import load_mesh,primitive,triangulate
-            if source_obj.suffix==".stl":
-                xyz,tri=load_mesh(source_obj)
-            else:
-                xyz,tri=triangulate(primitive(dict(kind="cad",asset=turn["asset"],dims={}),assets))
-            source_obj=folder/"target.obj"
-            with source_obj.open("wb") as f:
-                np.savetxt(f,xyz,fmt="v %.15g %.15g %.15g")
-                np.savetxt(f,tri+1,fmt="f %d %d %d")
-
-    def target(angle,screen,resolution,path):
-        w,h=screen["dims"]["w"],screen["dims"]["d"]
-        cols=max(1,round(resolution*w/max(w,h)))
-        rows=max(1,round(resolution*h/max(w,h)))
-        if turn:
-            subprocess.run([cli,"render-target","--obj",source_obj,"--angle",str(angle),
-                            "--elevation","0","--width",str(cols),"--height",str(rows),"--out",path],check=True)
-            with Image.open(path) as image:
-                return np.asarray(image).astype(float)/255
-        gray=monochrome(assets/screen["image"],max(rows,cols))
-        ratio=min(cols/gray.shape[1],rows/gray.shape[0])
-        resized=cv2.resize(gray,(max(1,round(ratio*gray.shape[1])),max(1,round(ratio*gray.shape[0]))),
-                           interpolation=cv2.INTER_AREA)
-        frame=np.zeros((rows,cols))
-        y=(rows-resized.shape[0])//2
-        x=(cols-resized.shape[1])//2
-        frame[y:y+resized.shape[0],x:x+resized.shape[1]]=resized
-        with path.open("wb") as f:
-            f.write(f"P5\n{cols} {rows}\n65535\n".encode("ascii"))
-            f.write(np.rint(frame*65535).astype(">u2").tobytes())
-        return frame
+    source_obj=target_mesh(assets,turn["asset"],folder) if turn else None
 
     for j,angle in enumerate(angles):
         for k,screen in enumerate(screens):
-            target(angle,screen,count,folder/f"{j}_{k}.pgm")
+            write_target(assets,screen,count,folder/f"{j}_{k}.pgm",source_obj,angle)
     out=folder/"result"
     subprocess.run([cli,"fit-scene",folder,out],check=True)
     # Inspect the same physical surface with fresh rays, including between target angles.
@@ -76,7 +71,8 @@ def fit(scene,assets,folder):
         report=json.loads((part/"report.json").read_text())
         for k,screen in enumerate(screens):
             image=part/report["screens"][k]["image"]
-            goal=target(angle,screen,96,part/f"target{k}.pgm")
+            target_path=part/f"target{k}.pgm"
+            goal=write_target(assets,screen,96,target_path,source_obj,angle)
             with Image.open(image) as im:
                 encoded=np.asarray(im).astype(float)/255
             observed=np.where(encoded<=.04045,encoded/12.92,((encoded+.055)/1.055)**2.4)*report["peak"]
@@ -87,10 +83,12 @@ def fit(scene,assets,folder):
                 numerator+=dot
                 denominator+=obs2
             entries.append(dict(image=image.relative_to(out).as_posix(),name=screen["name"],
+                                screen=screen["id"],target=target_path.relative_to(out).as_posix(),
                                 angle=angle,intermediate=angle not in angles,flux=report["screens"][k]["flux"],
-                                dot=dot,obs2=obs2,goal2=goal2))
+                                peak=report["peak"],dot=dot,obs2=obs2,goal2=goal2))
     gain=numerator/denominator if denominator else 0
     for row in entries:
+        row["display_gain"]=gain*row.pop("peak")
         dot,obs2,goal2=[row.pop(k) for k in ("dot","obs2","goal2")]
         row["error"]=float(np.sqrt(max(0.,gain*gain*obs2-2*gain*dot+goal2)/max(goal2,1e-16)))
     report=json.loads((out/"fit.json").read_text())

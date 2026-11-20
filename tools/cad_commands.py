@@ -38,6 +38,7 @@ class ModelingCommands:
         bar=self.addToolBar("Геометрия")
         self.insertToolBarBreak(bar)
         bar.setMovable(False)
+        bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         bar.addWidget(W.QLabel(" Выбор "))
         self.pick_selector=W.QComboBox()
         for key,title in (("object","Объект"),*topo.NAMES.items()):
@@ -57,7 +58,6 @@ class ModelingCommands:
         self.act(ops,"Подавить / восстановить операцию",self.suppress_step)
         self.act(ops,"Удалить операцию",self.delete_step)
         self.act(ops,"Проверить геометрию",self.inspect_geometry,key="inspect",bar=bar)
-        self.act(ops,"Подобрать расстояния…",self.placement,key="placement",bar=bar)
         self.tree.itemDoubleClicked.connect(lambda row,col:self.guard(self.edit_step) if row.data(0,Qt.UserRole+1) else None)
 
     def pick_mode(self,*_):

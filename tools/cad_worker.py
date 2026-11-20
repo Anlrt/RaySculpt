@@ -33,12 +33,23 @@ def run(request):
     if task=="checked_trace":
         import subprocess
         contain_children()
-        from cad_inspect import inspect
-        issues=inspect(request["scene"],Path(request["assets"]))
+        assets=Path(request["assets"])
+        issues=[]
+        if request["scene"]["objects"]:
+            from cad_inspect import inspect
+            issues=inspect(request["scene"],assets)
         if issues:
             Path(request["path"]).write_text(json.dumps(issues,ensure_ascii=False),encoding="utf-8")
         else:
             subprocess.run([request["cli"],*request["args"]],check=True)
+            if request.get("screens"):
+                from cad_fit import target_mesh,write_target
+                out=Path(request["out"])
+                turn=request.get("turntable")
+                mesh=target_mesh(assets,turn["asset"],out) if turn else None
+                for i,screen in enumerate(request["screens"]):
+                    if mesh or screen.get("image"):
+                        write_target(assets,screen,request["resolution"],out/f"target{i}.pgm",mesh)
     elif task=="inspect":
         from cad_inspect import inspect
         result=inspect(request["scene"],Path(request["assets"]))

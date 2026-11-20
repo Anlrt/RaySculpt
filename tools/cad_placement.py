@@ -39,8 +39,9 @@ def search(req):
     directory.mkdir()
     target=None
     if screen.get("image"):
-        from design_photo import monochrome
-        target=monochrome(assets/screen["image"],64)
+        from cad_targets import screen_target, screen_pixels
+        target=screen_target(assets/screen["image"],screen_pixels(screen["dims"]["w"],screen["dims"]["d"],64),
+                             screen.get("image_fit","fit"))
     source,_=relative(plate,light)
     c,b=relative(plate,screen)
     h=plate["dims"]["h"]

@@ -32,6 +32,8 @@ def node(kind, z=0.):
                 rot=[0.,0.,0.], locked=False, dims=DIMS.get(kind, {}).copy())
     if kind in SOLIDS:
         item.update(material="pmma", line=BUILTINS["pmma"]["default"])
+        if kind!="plate":
+            item["reference"]=True
     if kind=="prism":
         item["outline"]=[[-20.,-15.],[20.,-15.],[20.,15.],[-20.,15.]]
     return item
@@ -124,6 +126,8 @@ def validate(scene):
                 raise ValueError("Некорректная связь объектов")
             descendants(scene,i["id"])
         k = i["kind"]
+        if k=="screen" and i.get("image_fit","fit") not in ("fit","crop"):
+            raise ValueError("Неизвестный режим размещения изображения")
         if k not in LABELS or not isinstance(i["name"], str) or not i["name"].strip():
             raise ValueError("Неизвестный объект")
         for field in ("rot","pos"):
@@ -222,6 +226,9 @@ def consumed_tools(scene):
 def optical_setup(scene):
     consumed=consumed_tools(scene)
     solids = [i for i in scene["objects"] if i["kind"] in SOLIDS and not i.get("reference") and i["id"] not in consumed]
+    unsupported=[i["name"] for i in solids if i["kind"]!="plate"]
+    if unsupported:
+        raise ValueError("Трассировка поддерживает оптическую пластину. Проверьте роль тел: "+", ".join(unsupported))
     lights = [i for i in scene["objects"] if i["kind"] in ("point","area","sun")]
     screens = [i for i in scene["objects"] if i["kind"]=="screen"]
     if len(solids)!=1 or solids[0]["kind"]!="plate":
@@ -229,6 +236,23 @@ def optical_setup(scene):
     if len(lights)!=1 or not screens:
         raise ValueError("Для расчёта нужны один источник и хотя бы один экран")
     return solids[0], lights[0], screens
+
+
+def optical_signature(scene):
+    """Identity of the optical inputs, independent of tree labels and display state."""
+    consumed=consumed_tools(scene)
+    inputs=[]
+    for obj in scene["objects"]:
+        if obj["id"] in consumed or (obj["kind"] in SOLIDS and obj.get("reference")):
+            continue
+        row={k:obj[k] for k in ("id","kind","pos","rot","dims","profile","image","cut") if k in obj}
+        if "image" in obj:
+            row["image_fit"]=obj.get("image_fit","fit")
+        if obj["kind"] in SOLIDS:
+            row["n"]=index(scene,obj)
+        inputs.append(row)
+    turn=scene.get("turntable",{})
+    return json.dumps([inputs,{k:turn[k] for k in ("asset","screen","angles") if k in turn}],sort_keys=True)
 
 
 def relative(plate, item):

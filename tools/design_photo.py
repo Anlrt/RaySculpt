@@ -181,7 +181,7 @@ def monochrome(path, resolution):
 
 def write_profile(path, args, target):
     h, w = target.shape
-    height = args.width*h/w
+    height = args.height if args.height is not None else args.width*h/w
     # World Y increases upwards. Only the computational lattice is square.
     field = cv2.resize(target[::-1], (args.map_size,args.map_size), interpolation=cv2.INTER_AREA)
     mapping = inverse_transport(field, args.width, height, args.plate, args.steps)
@@ -198,7 +198,12 @@ def write_profile(path, args, target):
 def photo_design(args):
     if CAD.intersection(args.formats):
         import plate_cad  # Detect missing CAD support before optimizing.
-    target = monochrome(args.image, args.resolution)
+    if args.height is None:
+        target = monochrome(args.image, args.resolution)
+    else:
+        from cad_targets import screen_pixels, screen_target
+        size = screen_pixels(args.width, args.height, args.resolution)
+        target = screen_target(args.image, size, args.image_fit).astype(float)
     if target.max() <= 0:
         raise ValueError("The target has no light.")
     h,w = target.shape
@@ -296,12 +301,16 @@ if __name__ == "__main__":
     p.add_argument("--mesh-layout",choices=("uniform","transport"),default="uniform")
     p.add_argument("--plate",type=float,default=40)
     p.add_argument("--width",type=float,default=50)
+    p.add_argument("--height",type=float,help="Physical receiver height in mm")
+    p.add_argument("--image-fit",choices=("fit","crop"),default="fit")
     p.add_argument("--thickness",type=float,default=8)
     p.add_argument("--max-relief",type=float,default=5)
     p.add_argument("--index",type=float,default=1.49)
     p.add_argument("--source",type=float,default=600)
     p.add_argument("--screen",type=float,default=260)
     args = p.parse_args()
+    if args.height is not None and not (math.isfinite(args.height) and args.height > 0):
+        p.error("Invalid receiver height.")
     if args.out.exists() or not args.cli.is_file():
         p.error("Use a new output directory and a built caustic_cli.")
     if not (32 <= args.grid <= 1024 and 32 <= args.map_size <= 1024 and not args.grid%2

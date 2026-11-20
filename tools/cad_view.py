@@ -28,6 +28,7 @@ class View(QWidget):
         self.color_relief=False
         self.press=None
         self.moving=None
+        self.drag_axis=None
         self.move_mode=False
         self.pick_mode="object"
         self.highlights=[]
@@ -182,7 +183,48 @@ class View(QWidget):
             line(start+[shift,-3],start+[shift,3],"#657987")
         p.setPen(QColor("#526976"))
         p.drawText(QPointF(*(start+[0,-7])),f"{step:g} мм")
+        for axis,(base,end) in self.handles().items():
+            color=("#a63832","#317349","#275da6")[axis]
+            direction=(end-base)/np.linalg.norm(end-base)
+            side=np.array([-direction[1],direction[0]])
+            line(base,end,color,2.5)
+            p.setBrush(QColor(color))
+            p.drawPolygon(QPolygonF([QPointF(*pt) for pt in
+                          (end,end-10*direction+4*side,end-10*direction-4*side)]))
+            p.drawText(QPointF(*(end+6*direction+[1,-1])),"XYZ"[axis])
+        p.setBrush(Qt.NoBrush)
         p.end()
+
+    def handles(self):
+        if not self.move_mode or self.pick_mode!="object":
+            return {}
+        obj=next((item for item in self.items if item["id"]==self.selected),None)
+        if not obj or obj["locked"] or obj.get("parent") or obj.get("hidden") or obj["id"] in self.consumed:
+            return {}
+        origin=self.project(obj["pos"])[:2]
+        return {axis:(origin,origin+70*direction) for axis,direction in enumerate(self.basis()[:2].T)
+                if np.linalg.norm(direction)>.23}
+
+    def handle_at(self,pos):
+        point=np.array([pos.x(),pos.y()])
+        hits=[]
+        for axis,(base,end) in self.handles().items():
+            vector=end-base
+            t=np.dot(point-base,vector)/np.dot(vector,vector)
+            if .23<=t<=1.12:
+                distance=np.linalg.norm(point-(base+min(1.,t)*vector))
+                if distance<=8:
+                    hits.append((distance,axis))
+        return min(hits)[1] if hits else None
+
+    def dragged_location(self,pos):
+        delta=np.array([pos.x()-self.press.x(),pos.y()-self.press.y()])
+        if self.drag_axis is None:
+            return self.moving[1]+delta @ self.basis()[:2]/self.scale
+        direction=self.basis()[:2,self.drag_axis]*self.scale
+        location=self.moving[1].copy()
+        location[self.drag_axis]+=np.dot(delta,direction)/np.dot(direction,direction)
+        return location
 
     def at(self,pos):
         for idx,polygon in reversed(self.screen_hits):
@@ -200,7 +242,8 @@ class View(QWidget):
         self.press=event.position()
         self.last=self.press
         if event.button()==Qt.LeftButton:
-            key=self.at(self.press)
+            self.drag_axis=self.handle_at(self.press)
+            key=self.selected if self.drag_axis is not None else self.at(self.press)
             if self.pick_mode!="object" and not self.move_mode and not event.modifiers()&Qt.ShiftModifier:
                 key=key or self.selected
                 if key:
@@ -212,7 +255,7 @@ class View(QWidget):
                 self.picked.emit(key)
                 obj=next(i for i in self.items if i["id"]==key)
                 if (self.move_mode or event.modifiers()&Qt.ShiftModifier) and not obj["locked"] and "parent" not in obj:
-                    self.moving=(key,np.array(obj["pos"]))
+                    self.moving=(key,np.array(obj["pos"],dtype=float))
 
     def mouseMoveEvent(self,event):
         if self.press is None:
@@ -224,18 +267,16 @@ class View(QWidget):
         elif event.buttons()&Qt.MiddleButton:
             self.center-=np.array([delta.x(),delta.y()]) @ self.basis()[:2]/self.scale
         elif self.moving is not None:
-            delta=event.position()-self.press
-            location=self.moving[1]+np.array([delta.x(),delta.y()]) @ self.basis()[:2]/self.scale
+            location=self.dragged_location(event.position())
             self.dragged.emit(self.moving[0],location.tolist(),False)
         self.last=event.position()
         self.update()
 
     def mouseReleaseEvent(self,event):
         if self.moving is not None:
-            delta=event.position()-self.press
-            end=self.moving[1]+np.array([delta.x(),delta.y()]) @ self.basis()[:2]/self.scale
+            end=self.dragged_location(event.position())
             self.dragged.emit(self.moving[0],end.tolist(),True)
-        self.press=self.moving=None
+        self.press=self.moving=self.drag_axis=None
 
     def wheelEvent(self,event):
         before=self.scale
