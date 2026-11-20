@@ -113,6 +113,47 @@ def forward_transport(mx, my, grid, aperture, width, height):
     return x, y, (u/n-.5)*width, (v/n-.5)*height
 
 
+def forward_transport_native(worker, mx, my, grid, aperture, width, height, threads=12):
+    if Path(worker).suffix.lower()==".dll":
+        import ctypes
+        dll=ctypes.CDLL(str(Path(worker).resolve()))
+        solve=dll.raysculpt_forward_transport_v1
+        pointer=ctypes.POINTER(ctypes.c_double)
+        size=ctypes.c_size_t
+        double=ctypes.c_double
+        solve.argtypes=[pointer,pointer,size,size,size,double,double,double,size,pointer,pointer,size]
+        solve.restype=ctypes.c_int
+        mx,my=(np.ascontiguousarray(data,dtype=np.float64) for data in (mx,my))
+        if mx.ndim!=2 or mx.shape[0]!=mx.shape[1] or mx.shape!=my.shape:
+            raise ValueError("Invalid transport dimensions or map")
+        tx,ty=(np.empty((grid,grid),dtype=np.float64) for _ in range(2))
+        status=solve(mx.ctypes.data_as(pointer),my.ctypes.data_as(pointer),mx.size,mx.shape[0]-1,
+                     grid,aperture,width,height,threads,tx.ctypes.data_as(pointer),
+                     ty.ctypes.data_as(pointer),tx.size)
+        if status:
+            raise ValueError({1:"Invalid transport dimensions or map",
+                              2:"Transport folded. Reduce contrast or increase the transport resolution.",
+                              3:"Transport inversion did not converge within its iteration budget."}
+                             .get(status,"Native transport failed"))
+        axis=np.linspace(-aperture/2,aperture/2,grid)
+        x,y=np.meshgrid(axis,axis)
+        return x,y,tx,ty
+    with tempfile.TemporaryDirectory(prefix="raysculpt-transport-") as folder:
+        path = Path(folder)
+        for name, data in (("mx", mx), ("my", my)):
+            np.asarray(data,dtype="<f8").tofile(path/f"{name}.f64")
+        result = subprocess.run([worker,"forward-transport",path,str(mx.shape[0]-1),str(grid),
+                                 str(aperture),str(width),str(height),str(threads)],
+                                capture_output=True,text=True)
+        if result.returncode:
+            raise ValueError(result.stderr.strip())
+        tx,ty = (np.fromfile(path/f"{name}.f64",dtype="<f8").reshape(grid,grid)
+                 for name in ("tx","ty"))
+    axis = np.linspace(-aperture/2, aperture/2, grid)
+    x,y = np.meshgrid(axis,axis)
+    return x,y,tx,ty
+
+
 def optical_surface(x, y, tx, ty, aperture, thickness, index, source, screen):
     """Fit one integrable height to the Snell normals at the actual exit positions."""
     spacing = aperture / (x.shape[0]-1)
@@ -184,10 +225,17 @@ def write_profile(path, args, target):
     height = args.width*h/w
     # World Y increases upwards. Only the computational lattice is square.
     field = cv2.resize(target[::-1], (args.map_size,args.map_size), interpolation=cv2.INTER_AREA)
-    mapping = inverse_transport(field, args.width, height, args.plate, args.steps)
-    positions = forward_transport(*mapping, args.grid, args.plate, args.width, height)
-    surface = optical_surface(*positions, args.plate, args.thickness, args.index, args.source, args.screen)
-    coefficients = spline_coefficients(surface)
+    native=getattr(args,"native_numerics",None)
+    solve_map=native.inverse if native else inverse_transport
+    mapping = solve_map(field, args.width, height, args.plate, args.steps)
+    worker = getattr(args,"transport_worker",None)
+    parameters = (*mapping,args.grid,args.plate,args.width,height)
+    positions = forward_transport_native(worker,*parameters) if worker else forward_transport(*parameters)
+    geometry=(args.plate,args.thickness,args.index,args.source,args.screen)
+    if native:
+        coefficients=native.profile(*positions[2:],*geometry)
+    else:
+        coefficients=spline_coefficients(optical_surface(*positions,*geometry))
     if not np.isfinite(coefficients).all() or abs(coefficients).max() > args.max_relief:
         raise ValueError("Required relief exceeds the specified plate budget.")
     with path.open("w",encoding="ascii") as f:
@@ -196,6 +244,12 @@ def write_profile(path, args, target):
 
 
 def photo_design(args):
+    adapter=getattr(args,"poisson_adapter",None)
+    native=None
+    if adapter:
+        from photo_native import NativePhotoNumerics
+        native=NativePhotoNumerics(args.transport_worker,adapter)
+        args.native_numerics=native
     if CAD.intersection(args.formats):
         import plate_cad  # Detect missing CAD support before optimizing.
     target = monochrome(args.image, args.resolution)
@@ -242,10 +296,14 @@ def photo_design(args):
             actual = measured[gy:gy+h,gx:gx+w]
             # Squared linear irradiance gives very little weight to bright
             # streaks in shadows. Assess perceived tone and small-scale error.
-            delta = display(actual) - display_target
-            texture = delta - cv2.GaussianBlur(delta,(0,0),1.5)
             error = report["picture_relative_rmse"]
-            score = np.sqrt(np.mean(delta**2)) + np.sqrt(np.mean(texture**2)) + .15*error
+            floor=.5*args.shadow_floor*target.mean()
+            if native:
+                score,corrected=native.calibrate(actual,target,goal,drive,error,floor)
+            else:
+                delta = display(actual) - display_target
+                texture = delta - cv2.GaussianBlur(delta,(0,0),1.5)
+                score = np.sqrt(np.mean(delta**2)) + np.sqrt(np.mean(texture**2)) + .15*error
             history.append(error)
             scores.append(float(score))
             if score >= best_score:
@@ -254,8 +312,7 @@ def photo_design(args):
             best_score, best = score, profile
             # Low-pass just the correction to avoid imprinting sampling noise.
             # Do not soften the target or the reported projection.
-            drive = np.maximum(.5*args.shadow_floor*target.mean(),
-                               drive + .80*cv2.GaussianBlur(goal-actual,(0,0),.65))
+            drive = corrected if native else np.maximum(floor,drive + .80*cv2.GaussianBlur(goal-actual,(0,0),.65))
         result = temp/"result"
         needs_mesh = bool(set(args.formats)-CAD)
         optical_mesh = needs_mesh and args.mesh_layout=="transport"
@@ -287,6 +344,8 @@ if __name__ == "__main__":
     p.add_argument("--cli",type=Path,default=Path(__file__).resolve().parents[1]/"build/Release/caustic_cli.exe")
     p.add_argument("--grid",type=int,default=512)
     p.add_argument("--map-size",type=int,default=640)
+    p.add_argument("--transport-worker",type=Path,help="experimental Rust forward transport executable or DLL")
+    p.add_argument("--poisson-adapter",type=Path,help="experimental OpenCV adapter for native photo stages")
     p.add_argument("--resolution",type=int,default=448)
     p.add_argument("--steps",type=int,default=100)
     p.add_argument("--corrections",type=int,default=2)
@@ -302,6 +361,8 @@ if __name__ == "__main__":
     p.add_argument("--source",type=float,default=600)
     p.add_argument("--screen",type=float,default=260)
     args = p.parse_args()
+    if args.poisson_adapter and (not args.transport_worker or args.transport_worker.suffix.lower()!=".dll"):
+        p.error("--poisson-adapter requires a Rust --transport-worker DLL")
     if args.out.exists() or not args.cli.is_file():
         p.error("Use a new output directory and a built caustic_cli.")
     if not (32 <= args.grid <= 1024 and 32 <= args.map_size <= 1024 and not args.grid%2

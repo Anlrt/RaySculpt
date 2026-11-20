@@ -68,31 +68,42 @@ def fit(scene,assets,folder):
     check_angles=sorted(set(angles+[(a+b)/2 for a,b in zip(angles,angles[1:])]))
     cfg=folder/"verify.txt"
     cfg.write_text(trace_settings(scene,96,240000),encoding="ascii")
+    validation_seed=1
+    noise_seed=0x70ca4e31
     entries=[]
-    numerator=denominator=0.
+    observations={key:[] for key in ("candidate","flat","flat_repeat")}
     for j,angle in enumerate(check_angles):
-        part=out/f"angle{j}"
-        subprocess.run([cli,"trace-scene",cfg,out/"surface.txt",part,str(angle)],check=True)
-        report=json.loads((part/"report.json").read_text())
+        checks={}
+        for key,profile,seed in (("candidate",out/"surface.txt",validation_seed),
+                                 ("flat","-",validation_seed),("flat_repeat","-",noise_seed)):
+            part=out/f"angle{j}-{key}"
+            subprocess.run([cli,"trace-scene",cfg,profile,part,str(angle),str(seed)],check=True)
+            checks[key]=(part,json.loads((part/"report.json").read_text())["screens"])
+        part,results=checks["candidate"]
         for k,screen in enumerate(screens):
-            image=part/report["screens"][k]["image"]
-            goal=target(angle,screen,96,part/f"target{k}.pgm")
-            with Image.open(image) as im:
-                encoded=np.asarray(im).astype(float)/255
-            observed=np.where(encoded<=.04045,encoded/12.92,((encoded+.055)/1.055)**2.4)*report["peak"]
-            obs2=float(np.sum(observed**2))
-            dot=float(np.sum(observed*goal))
-            goal2=float(np.sum(goal**2))
-            if angle in angles:
-                numerator+=dot
-                denominator+=obs2
-            entries.append(dict(image=image.relative_to(out).as_posix(),name=screen["name"],
-                                angle=angle,intermediate=angle not in angles,flux=report["screens"][k]["flux"],
-                                dot=dot,obs2=obs2,goal2=goal2))
-    gain=numerator/denominator if denominator else 0
+            goal=target(angle,screen,96,part/f"target{k}.pgm").ravel()
+            for key,(directory,rows) in checks.items():
+                field=directory/Path(rows[k]["image"]).with_suffix(".f64")
+                observed=np.fromfile(field,dtype="<f8")
+                observations[key].append((float(observed @ goal),float(observed @ observed),
+                                          float(goal @ goal)))
+            entry=results[k]
+            entries.append(dict(image=(part/entry["image"]).relative_to(out).as_posix(),
+                                name=screen["name"],angle=angle,intermediate=angle not in angles,
+                                flux=entry["flux"],hits=entry["hits"],flat_flux=checks["flat"][1][k]["flux"]))
+    for key,rows in observations.items():
+        numerator=sum(dot for row,(dot,_,_) in zip(entries,rows) if not row["intermediate"])
+        denominator=sum(obs2 for row,(_,obs2,_) in zip(entries,rows) if not row["intermediate"])
+        gain=numerator/denominator if denominator else 0.
+        for row,(dot,obs2,goal2) in zip(entries,rows):
+            field="error" if key=="candidate" else key+"_error"
+            row[field]=float(np.sqrt(max(0.,gain*gain*obs2-2*gain*dot+goal2)/max(goal2,1e-16)))
     for row in entries:
-        dot,obs2,goal2=[row.pop(k) for k in ("dot","obs2","goal2")]
-        row["error"]=float(np.sqrt(max(0.,gain*gain*obs2-2*gain*dot+goal2)/max(goal2,1e-16)))
+        row["tolerance"]=abs(row["flat_repeat_error"]-row["flat_error"])
+        row["passed"]=row["flux"]>0 and row["error"]<=row["flat_error"]+row["tolerance"]
     report=json.loads((out/"fit.json").read_text())
+    report["validation_seeds"]=[validation_seed,noise_seed]
+    report["accepted"]=report["final"]<report["initial"] and all(
+        row["passed"] for row in entries if not row["intermediate"])
     report["screens"]=entries
     (out/"validation.json").write_text(json.dumps(report),encoding="utf-8")

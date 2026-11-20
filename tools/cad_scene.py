@@ -186,15 +186,21 @@ def save_scene(scene, folder, path):
             z.writestr("scene.json",json.dumps(scene,ensure_ascii=False,allow_nan=False))
             for key in sorted(keys(scene)):
                 z.write(folder/key,"assets/"+key)
+            check_project_budget(z)
         os.replace(staging,path)
     finally:
         staging.unlink(missing_ok=True)
 
 
+def check_project_budget(archive):
+    if (sum(f.file_size for f in archive.infolist()) > PROJECT_LIMIT
+            or archive.getinfo("scene.json").file_size > 8*1024**2):
+        raise ValueError("Проект превышает бюджет загрузки")
+
+
 def load_scene(path, folder):
     with ZipFile(path) as z:
-        if sum(f.file_size for f in z.infolist()) > PROJECT_LIMIT or z.getinfo("scene.json").file_size > 8*1024**2:
-            raise ValueError("Проект превышает бюджет загрузки")
+        check_project_budget(z)
         scene = json.loads(z.read("scene.json"))
         validate(scene)
         for key in keys(scene):
@@ -330,6 +336,27 @@ def trace_settings(scene, resolution=256, rays=2000000):
         w,h = screen["dims"]["w"],screen["dims"]["d"]
         values += [*c,*b[:,0],*(-b[:,1]),w,h,max(1,round(resolution*w/max(w,h))),max(1,round(resolution*h/max(w,h)))]
     return " ".join(str(v) for v in values)+"\n"
+
+
+def design_mode(scene):
+    for error, _, message in diagnostics(scene):
+        if error:
+            return "INVALID", message
+    plate, lamp, screens = optical_setup(scene)
+    if "turntable" in scene:
+        return "SKETCH", "Эскизный подбор для серии углов"
+    if any("image" not in screen for screen in screens):
+        return "INVALID", "Назначьте изображение каждому экрану или выберите 3D-цель"
+    if len(screens)!=1 or lamp["kind"]!="point":
+        return "SKETCH", "Эскизный подбор для нескольких экранов или неточечного источника"
+    screen = screens[0]
+    source,_ = relative(plate,lamp)
+    target,basis = relative(plate,screen)
+    if target[2]<=plate["dims"]["h"] and np.allclose(basis,np.eye(3),atol=1e-7):
+        return "INVALID", "Экран должен находиться за выходной гранью пластины"
+    if max(abs(source[:2]).max(),abs(target[:2]).max())>1e-6 or not np.allclose(basis,np.eye(3),atol=1e-7):
+        return "SKETCH", "Эскизный подбор для внеосевой компоновки"
+    return "PHOTO", "Фотосинтез для одного экрана и точечного источника на оси"
 
 
 def design_geometry(scene):

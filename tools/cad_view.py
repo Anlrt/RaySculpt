@@ -1,10 +1,11 @@
 """Orthographic model viewport. Screen-space render buffers never enter the optical solver."""
 import math
+import os
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtCore import Qt, Signal, QPointF, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 from cad_scene import SOLIDS, rotation
 
 
@@ -25,6 +26,7 @@ class View(QWidget):
         self.center=np.zeros(3)
         self.scale=7.
         self.show_grid=True
+        self.native=None
         self.color_relief=False
         self.press=None
         self.moving=None
@@ -33,6 +35,13 @@ class View(QWidget):
         self.highlights=[]
         self.hit=None
         self.screen_hits=[]
+        library=os.environ.get("RAYSCULPT_GPU_WIDGET")
+        if library and QApplication.platformName()!="offscreen":
+            try:
+                from cad_view_native import NativeViewport
+                self.native=NativeViewport(self,library)
+            except (ImportError,OSError,RuntimeError):
+                self.native=None
         self.setToolTip("ЛКМ — выбор · ПКМ — вращение · СКМ — панорама · колесо — масштаб · Shift+ЛКМ — перемещение")
 
     def basis(self):
@@ -68,7 +77,31 @@ class View(QWidget):
         self.scale=float(min(self.width()*.71/max(10,size[0]),self.height()*.71/max(10,size[1])))
         self.update()
 
+    def update(self,*args):
+        if self.native is not None:
+            self.native.sync()
+        super().update(*args)
+
+    def resizeEvent(self,event):
+        if self.native is not None:
+            self.native.widget.setGeometry(self.rect())
+        super().resizeEvent(event)
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        if self.native is not None:
+            self.native.sync()
+            QTimer.singleShot(750,self,self.check_native)
+
+    def check_native(self):
+        if self.native is not None and not self.color_relief and not self.native.ready():
+            self.native.widget.hide()
+            self.native.failed=True
+            self.update()
+
     def paintEvent(self,event):
+        if self.native is not None and self.native.ready():
+            return
         w,h=self.width(),self.height()
         p=QPainter(self)
         p.fillRect(self.rect(),QColor("#f4f7f9"))
@@ -185,6 +218,8 @@ class View(QWidget):
         p.end()
 
     def at(self,pos):
+        if self.native is not None and self.native.ready():
+            return self.native.pick(pos)
         for idx,polygon in reversed(self.screen_hits):
             if polygon.containsPoint(pos,Qt.OddEvenFill):
                 return self.items[idx-1]["id"]

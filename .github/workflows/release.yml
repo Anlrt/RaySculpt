@@ -28,11 +28,20 @@ jobs:
         run: cmake --build build --config Release --parallel 2
       - name: Test native engine
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Build and test Rust worker
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +stable test --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +stable build --release --locked
       - name: Test desktop and CAD export
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONUTF8: '1'
-        run: python -m unittest discover -s tests -p "test_*.py"
+        run: |
+          $env:RAYSCULPT_WORKER = (Resolve-Path target/release/caustic_worker.exe).Path
+          python -m unittest discover -s tests -p "test_*.py"
       - name: Package
         run: python tools/package_release.py
       - uses: actions/upload-artifact@v4

@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,7 @@ struct TraceConfig {
     bool fresnel = true;
     std::atomic_bool* cancel_flag = nullptr;
     bool stratify_entrance = false;
+    bool profile_timing = false;
 };
 
 struct TraceStats {
@@ -64,6 +66,7 @@ struct IrradianceImage {
     std::uint32_t height = 0;
     // Relative irradiance in row-major order, with row 0 at receiver -v.
     std::vector<double> values;
+    std::uint64_t hits = 0;
 };
 
 struct TraceResult {
@@ -71,6 +74,23 @@ struct TraceResult {
     TraceStats stats;
     TraceStopReason stop_reason = TraceStopReason::Completed;
     double elapsed_seconds = 0.0;
+    double reduction_seconds = 0.0;
+    double sampled_intersection_ns = 0.0;
+    double sampled_accumulation_ns = 0.0;
+    std::uint64_t intersection_samples = 0;
+    std::uint64_t accumulation_samples = 0;
+};
+
+// Reuse for sequential traces from one caller. Each call still owns its result.
+class TraceWorkspace {
+public:
+    TraceWorkspace();
+    ~TraceWorkspace();
+private:
+    friend TraceResult trace_caustic(const HeightField&, const PlatePose&, const LightSource&,
+                                     const std::vector<RectReceiver>&, const TraceConfig&, TraceWorkspace*);
+    struct State;
+    std::unique_ptr<State> state_;
 };
 
 // Throws std::invalid_argument for malformed geometry or budget settings.
@@ -80,6 +100,6 @@ TraceResult trace_caustic(const HeightField& plate,
                          const PlatePose& pose,
                          const LightSource& source,
                          const std::vector<RectReceiver>& receivers,
-                         const TraceConfig& config);
+                         const TraceConfig& config, TraceWorkspace* workspace = nullptr);
 
 } // namespace caustic

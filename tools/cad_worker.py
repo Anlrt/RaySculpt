@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 
-def contain_children():
+def contain_children(memory_limit=None):
     if os.name!="nt":
         return
     import ctypes as ct
@@ -21,6 +21,9 @@ def contain_children():
     job=kernel.CreateJobObjectW(None,None)
     data=Extended()
     data.basic.flags=0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if memory_limit is not None:
+        data.basic.flags|=0x0200  # JOB_OBJECT_LIMIT_JOB_MEMORY
+        data.memory[1]=memory_limit
     if not job or not kernel.SetInformationJobObject(wt.HANDLE(job),9,ct.byref(data),ct.sizeof(data)):
         raise ct.WinError(ct.get_last_error())
     if not kernel.AssignProcessToJobObject(wt.HANDLE(job),wt.HANDLE(-1)):
@@ -30,11 +33,17 @@ def contain_children():
 
 def run(request):
     task=request["task"]
-    if task=="checked_trace":
+    if task=="recovery":
+        from cad_scene import save_scene
+        save_scene(request["scene"],Path(request["assets"]),Path(request["path"]))
+        return
+    if task in ("checked_trace","trace"):
         import subprocess
-        contain_children()
-        from cad_inspect import inspect
-        issues=inspect(request["scene"],Path(request["assets"]))
+        contain_children(request.get("memory_limit_bytes"))
+        issues=[]
+        if task=="checked_trace":
+            from cad_inspect import inspect
+            issues=inspect(request["scene"],Path(request["assets"]))
         if issues:
             Path(request["path"]).write_text(json.dumps(issues,ensure_ascii=False),encoding="utf-8")
         else:
@@ -49,6 +58,8 @@ def run(request):
         result=search(request)
         Path(request["path"]).write_text(json.dumps(result,ensure_ascii=False),encoding="utf-8")
     elif task=="export":
+        if os.environ.get("RAYSCULPT_CAD_EXPORT"):
+            contain_children()
         from cad_geometry import export_body
         export_body(request["object"],Path(request["assets"]),Path(request["path"]),request.get("cells"))
     elif task=="import":
@@ -72,5 +83,8 @@ if __name__=="__main__":
     try:
         run(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))
     except Exception as exc:
-        print(str(exc),file=sys.stderr)
+        if isinstance(exc,MemoryError) or getattr(exc,"winerror",0) in (8,14,1455,1816):
+            print(json.dumps(dict(event="error",detail=dict(code="memory",message=str(exc)))),file=sys.stderr)
+        else:
+            print(str(exc),file=sys.stderr)
         sys.exit(1)

@@ -233,6 +233,124 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(state,win.snapshot())
         self.assertIsNone(win.result)
 
+    def test_save_budget_preserves_existing_project(self):
+        win=self.win
+        path=self.root/"budget.ccad"
+        m.save_scene(win.scene,win.assets,path)
+        before=path.read_bytes()
+        screen=win.scene["objects"][2]
+        screen["name"]+="x"*1024
+        with ZipFile(path) as archive:
+            limit=archive.getinfo("scene.json").file_size
+        with patch.object(m,"PROJECT_LIMIT",limit):
+            with self.assertRaises(ValueError):
+                m.save_scene(win.scene,win.assets,path)
+            self.assertEqual(path.read_bytes(),before)
+            self.assertEqual(m.load_scene(path,win.assets)["version"],2)
+
+    def test_trace_result_from_previous_revision_is_ignored(self):
+        win=self.win
+        win.ray_count,win.resolution=80_000,64
+        win.trace()
+        win.mutate(lambda:win.scene["objects"][2].update(name="Новый экран"))
+        self.finished()
+        self.assertIsNone(win.result)
+        self.assertIn("Сцена изменилась во время расчёта",win.journal.toPlainText())
+
+    def test_recovery_reopens_without_replacing_original(self):
+        original=self.root/"original.ccad"
+        win=self.win
+        with patch.object(ui,"RECOVERY",self.root/"recovery"):
+            ui.RECOVERY.mkdir()
+            win.recovery_path=ui.RECOVERY/"test.ccad"
+            m.save_scene(win.scene,win.assets,original)
+            original_bytes=original.read_bytes()
+            win.mutate(lambda:win.scene["objects"][2].update(name="Копия экрана"))
+            win.autosave_recovery()
+            deadline=time.monotonic()+15
+            while win.recovery_proc and time.monotonic()<deadline:
+                self.app.processEvents()
+                time.sleep(.01)
+            self.assertIsNone(win.recovery_proc)
+            self.assertTrue(win.recovery_path.is_file())
+            win.recovery_lock.unlock()  # Simulate the previous process having exited.
+            restored=ui.Window()
+            try:
+                with patch.object(ui.W.QMessageBox,"question",return_value=ui.W.QMessageBox.Yes):
+                    restored.offer_recovery()
+                self.assertEqual(restored.scene["objects"][2]["name"],"Копия экрана")
+                self.assertIsNone(restored.path)
+                self.assertNotEqual(restored.saved,restored.snapshot())
+                self.assertEqual(original.read_bytes(),original_bytes)
+            finally:
+                restored.saved=restored.snapshot()
+                restored.close()
+
+    def test_diagnostics_omits_project_assets_without_opt_in(self):
+        win=self.win
+        screenshot=self.root/"target.png"
+        Image.new("L",(16,16),128).save(screenshot)
+        win.scene["objects"][2]["image"]=m.store_asset(screenshot,win.assets)
+        path=self.root/"diagnostics.zip"
+        with patch.object(ui.W.QFileDialog,"getSaveFileName",return_value=(str(path),"")), \
+             patch.object(ui.W.QMessageBox,"question",return_value=ui.W.QMessageBox.No):
+            win.save_diagnostics()
+        with ZipFile(path) as archive:
+            self.assertEqual(archive.namelist(),["diagnostics.json"])
+            payload=json.loads(archive.read("diagnostics.json"))
+            self.assertIn("display_drivers",payload)
+            self.assertEqual(payload["settings"]["recovery_interval_seconds"],
+                             win.recovery_timer.interval()//1000)
+
+    @unittest.skipUnless(os.name=="nt","Windows job memory limit")
+    def test_trace_memory_error_suggests_increasing_limit(self):
+        win=self.win
+        win.trace_memory_mib=32
+        win.ray_count,win.resolution=16_000,1024
+        with patch.object(ui.W.QMessageBox,"warning") as warning:
+            win.trace()
+            self.finished()
+        self.assertIsNone(win.result)
+        self.assertIn("Увеличьте лимит памяти",warning.call_args.args[2])
+
+    def test_design_mode_reports_invalid_and_sketch(self):
+        win=self.win
+        _,light,screen=win.scene["objects"]
+        image=self.root/"target.png"
+        Image.new("L",(16,16),128).save(image)
+        screen["image"]=m.store_asset(image,win.assets)
+        self.assertEqual(m.design_mode(win.scene)[0],"PHOTO")
+        screen["pos"][1]+=1
+        self.assertEqual(m.design_mode(win.scene)[0],"SKETCH")
+        light.update(kind="area",dims={"w":8.,"d":7.})
+        self.assertEqual(m.design_mode(win.scene)[0],"SKETCH")
+        screen["pos"]=[4.,0.,25.]
+        self.assertEqual(m.design_mode(win.scene)[0],"INVALID")
+
+    def test_relief_collision_blocks_design(self):
+        win=self.win
+        plate,_,screen=win.scene["objects"]
+        profile=self.root/"collision.txt"
+        with profile.open("w",encoding="ascii") as stream:
+            stream.write("7 40 8 1.49 600 260 50 50\n")
+            y,x=np.mgrid[-1:1:7j,-1:1:7j]
+            np.savetxt(stream,np.exp(-6*(x*x+y*y)))
+        image=self.root/"target.png"
+        Image.new("L",(16,16),128).save(image)
+        def configure():
+            win.attach_profile(plate,profile)
+            screen["image"]=m.store_asset(image,win.assets)
+            screen["pos"]=(np.array(plate["pos"])+m.rotation(plate)[:,2]*8.2).tolist()
+        win.mutate(configure)
+        self.assertEqual(m.design_mode(win.scene)[0],"PHOTO")
+        before=win.snapshot()
+        with patch.object(ui.W.QInputDialog,"getItem") as choose_quality:
+            win.design()
+            self.finished()
+        choose_quality.assert_not_called()
+        self.assertEqual(win.snapshot(),before)
+        self.assertTrue(any(issue["severity"]=="error" for issue in win.inspection))
+
 
 if __name__=="__main__":
     unittest.main()

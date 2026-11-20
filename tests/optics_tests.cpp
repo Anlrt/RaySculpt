@@ -99,6 +99,8 @@ void test_area_source_and_nearest_screen() {
     const double far_total = std::accumulate(result.images[0].values.begin(),
                                              result.images[0].values.end(), 0.0);
     require(near_total > 0.0 && far_total == 0.0, "nearest screen did not block farther screen");
+    require(result.images[0].hits == 0 && result.images[1].hits == result.stats.receiver_hit,
+            "per-receiver hits must account for the intercepted rays");
 }
 
 void test_total_internal_reflection() {

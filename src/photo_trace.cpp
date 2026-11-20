@@ -121,8 +121,21 @@ void fit_scene(const std::filesystem::path& input, const std::filesystem::path& 
 }
 
 void trace_scene(const std::filesystem::path& settings, const std::filesystem::path& profile,
-                 const std::filesystem::path& out, double angle) {
+                 const std::filesystem::path& out, double angle,
+                 std::optional<std::uint64_t> validation_seed,
+                 const std::filesystem::path& cancel_file, std::uint32_t profile_threads) {
+    const auto parse_start = std::chrono::steady_clock::now();
     auto [plate,light,cfg,screens] = read_scene(settings);
+    if (validation_seed) cfg.seed = *validation_seed;
+    bool write_linear = validation_seed.has_value();
+#ifdef CAUSTIC_REFERENCE_TRACE
+    cfg.thread_count = 12;
+    write_linear = true;
+#endif
+    if (profile_threads) {
+        cfg.thread_count = profile_threads;
+        cfg.profile_timing = true;
+    }
     if (profile != "-") {
         std::ifstream file(profile);
         double width, thickness, design_index, source_z, screen_z, target_w, target_h;
@@ -140,7 +153,35 @@ void trace_scene(const std::filesystem::path& settings, const std::filesystem::p
     }
     PlatePose pose;
     pose.rotation_y_deg=angle;
+    const auto parse_end = std::chrono::steady_clock::now();
+    if (!cancel_file.empty()) {
+        std::uintmax_t pixels = 0;
+        for (const auto& receiver : screens)
+            pixels += std::uintmax_t(receiver.image_width_px) * receiver.image_height_px;
+        const auto parent = out.has_parent_path() ? out.parent_path() : std::filesystem::path(".");
+        const auto needed = pixels * (sizeof(double) + 2) + 65536;
+        if (std::filesystem::space(parent).available < needed)
+            throw std::runtime_error("insufficient disk space for trace output");
+    }
+    std::atomic_bool cancelled{false};
+    std::jthread watcher;
+    if (!cancel_file.empty()) {
+        cfg.cancel_flag = &cancelled;
+        watcher = std::jthread([&](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                std::error_code error;
+                if (std::filesystem::exists(cancel_file,error)) {
+                    cancelled.store(true);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        });
+    }
     auto result = trace_caustic(plate, pose, light, screens, cfg);
+    watcher.request_stop();
+    if (result.stop_reason == TraceStopReason::TimedOut)
+        throw std::runtime_error("trace exceeded its time budget");
     if (result.stop_reason != TraceStopReason::Completed || result.stats.non_finite)
         throw std::runtime_error("incomplete CAD trace");
     if (!std::filesystem::create_directory(out)) throw std::runtime_error("output directory already exists");
@@ -161,13 +202,57 @@ void trace_scene(const std::filesystem::path& settings, const std::filesystem::p
         const std::string name = screens[i].id+".pgm";
 #endif
         save_projection_image(out/name,img.width,img.height,img.values,peak > 0 ? 1/peak : 1);
+        if (write_linear) {
+            std::ofstream linear(out/(screens[i].id+".f64"), std::ios::binary);
+            linear.write(reinterpret_cast<const char*>(img.values.data()),
+                         static_cast<std::streamsize>(img.values.size()*sizeof(double)));
+            linear.close();
+            if (!linear) throw std::runtime_error("cannot save linear irradiance image");
+        }
         const double pixel_area = screens[i].width_mm*screens[i].height_mm/(double(img.width)*img.height);
-        report << (i ? "," : "") << "{\"image\":\"" << name << "\",\"flux\":"
+        report << (i ? "," : "") << "{\"image\":\"" << name << "\",\"hits\":" << img.hits << ",\"flux\":"
                << pixel_area*std::accumulate(img.values.begin(),img.values.end(),0.) << "}";
     }
     report << "]}\n";
     report.close();
     if (!report) throw std::runtime_error("cannot save CAD trace report");
+    if (profile_threads) {
+        std::ofstream timing(out/"timing.json");
+        timing << "{\"threads\":" << profile_threads
+               << ",\"parse_seconds\":" << std::chrono::duration<double>(parse_end-parse_start).count()
+               << ",\"trace_seconds\":" << result.elapsed_seconds
+               << ",\"reduction_seconds\":" << result.reduction_seconds
+               << ",\"sampled_intersection_ns\":" << result.sampled_intersection_ns
+               << ",\"sampled_accumulation_ns\":" << result.sampled_accumulation_ns
+               << ",\"intersection_samples\":" << result.intersection_samples
+               << ",\"accumulation_samples\":" << result.accumulation_samples << "}\n";
+        timing.close();
+        if (!timing) throw std::runtime_error("cannot save trace timing");
+    }
+#ifdef CAUSTIC_REFERENCE_TRACE
+    if (profile_threads && cfg.ray_count == 16000) {
+        constexpr int repetitions = 20;
+        cfg.profile_timing = false;
+        TraceWorkspace workspace;
+        double transient = 0.0, pooled = 0.0;
+        for (int i = 0; i < repetitions; ++i) {
+            const auto a = trace_caustic(plate,pose,light,screens,cfg);
+            const auto b = trace_caustic(plate,pose,light,screens,cfg,&workspace);
+            if (a.stop_reason != b.stop_reason || a.stats.receiver_hit != b.stats.receiver_hit)
+                throw std::runtime_error("trace pool changed the ray outcomes");
+            for (std::size_t r = 0; r < a.images.size(); ++r)
+                if (a.images[r].values != b.images[r].values || a.images[r].hits != b.images[r].hits)
+                    throw std::runtime_error("trace pool changed the linear field");
+            transient += a.elapsed_seconds;
+            pooled += b.elapsed_seconds;
+        }
+        std::ofstream comparison(out/"pool.json");
+        comparison << "{\"repetitions\":" << repetitions << ",\"transient_seconds\":"
+                   << transient << ",\"pooled_seconds\":" << pooled << "}\n";
+        comparison.close();
+        if (!comparison) throw std::runtime_error("cannot save trace pool timing");
+    }
+#endif
 }
 
 void trace_photo(const std::filesystem::path& profile, const std::filesystem::path& target_path,

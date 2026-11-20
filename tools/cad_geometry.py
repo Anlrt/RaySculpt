@@ -231,13 +231,36 @@ def visual_geometry(item,folder):
 
 def export_body(item,folder,path,cells=None):
     from tempfile import TemporaryDirectory
+    import json
     import os
+    import subprocess
     from plate_cad import write_solid
     from OCP import StlAPI
     ext=path.suffix.lower()
+    native=os.environ.get("RAYSCULPT_CAD_EXPORT")
     with TemporaryDirectory(dir=path.parent) as tmp:
         staging=Path(tmp)/("body"+ext)
-        if item["kind"]=="mesh":
+        if native and item["kind"]=="plate" and ext in (".step",".stp",".brep"):
+            if item.get("profile"):
+                p=Profile.read(folder/item["profile"])
+            else:
+                d=item["dims"]
+                p=Profile(d["w"],d["h"],np.zeros((3,3)),True)
+            profile=Path(tmp)/"surface.txt"
+            with profile.open("w",encoding="ascii") as stream:
+                print(p.grid,p.width,p.thickness,0,0,0,0,0,file=stream)
+                np.savetxt(stream,p.relief,fmt="%.17g")
+            pose=Path(tmp)/"pose.txt"
+            np.savetxt(pose,np.column_stack((rotation(item),item["pos"])),fmt="%.17g")
+            subprocess.run([native,profile,"linear" if p.linear_ends else "clamped",
+                            staging,pose],check=True)
+        elif native and item["kind"]!="mesh" and ext in (".step",".stp",".brep"):
+            request=Path(tmp)/"body.json"
+            request.write_text(json.dumps(dict(body=item,assets=str(folder),
+                basis=rotation(item).tolist(),offset=item["pos"]),ensure_ascii=False,
+                allow_nan=False),encoding="utf-8")
+            subprocess.run([native,"--body",request,staging],check=True)
+        elif item["kind"]=="mesh":
             if ext not in (".obj",".stl"):
                 raise ValueError("Для сетки доступны OBJ и STL")
             xyz,tri=load_mesh(folder/item["asset"])

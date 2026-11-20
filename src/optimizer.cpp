@@ -123,6 +123,7 @@ OptimizationResult optimize_height_field(const HeightField& initial,
         }
         return false;
     };
+    TraceWorkspace workspace;
     auto evaluate = [&](const HeightField& plate) {
         double loss = config.smoothness_weight * smoothness_penalty(plate);
         struct Observation {
@@ -148,7 +149,8 @@ OptimizationResult optimize_height_field(const HeightField& initial,
             trace_config.max_seconds = std::min(trace_config.max_seconds, remaining);
             trace_config.cancel_flag = config.cancel_flag;
             auto traced = trace_caustic(plate, frame.pose, source,
-                                        frame.receivers, trace_config);
+                                        frame.receivers, trace_config,
+                                        trace_config.ray_count <= 16'000 ? &workspace : nullptr);
             if (traced.stop_reason != TraceStopReason::Completed) {
                 result.stop_reason = traced.stop_reason == TraceStopReason::Cancelled ?
                     OptimizationStopReason::Cancelled : OptimizationStopReason::TimedOut;

@@ -29,6 +29,9 @@ from export_plate import Profile
 DIMS={"w":"Ширина","d":"Глубина / высота","h":"Высота по Z","r":"Радиус"}
 CLI=ROOT/"build/Release/caustic_cli.exe"
 LIBRARY=Path(C.QStandardPaths.writableLocation(C.QStandardPaths.AppDataLocation))/"CausticCAD"/"materials.json"
+RECOVERY=LIBRARY.parent/"recovery"
+RECOVERY_DEFAULT=240
+TRACE_MEMORY_DEFAULT_MIB=1024
 STYLES="""
 QMainWindow, QDialog {background:#eff3f5;color:#233844}
 QMenuBar,QMenu,QToolBar {background:#fff;color:#233844}
@@ -122,6 +125,20 @@ class Window(ModelingCommands,W.QMainWindow):
         self.saved=self.snapshot()
         self.cache={}
         self.revision=0
+        self.recovery_path=RECOVERY/(uuid4().hex+".ccad")
+        self.recovery_lock=None
+        self.recovery_proc=None
+        self.recovery_epoch=0
+        self.recovery_snapshot=None
+        self.recovery_source=None
+        self.recovery_timer=C.QTimer(self)
+        self.recovery_timer.timeout.connect(self.autosave_recovery)
+        settings=C.QSettings("Caustic CAD","Caustic CAD")
+        self.trace_memory_mib=max(1,min(settings.value("trace_memory_mib",
+            TRACE_MEMORY_DEFAULT_MIB,type=int),2_147_483_647))
+        interval=settings.value(
+            "recovery_interval_seconds",RECOVERY_DEFAULT,type=int)
+        self.recovery_timer.start(max(1,min(interval,86_400))*1000)
         self.proc=None
         self.result=None
         self.optical_issues=[]
@@ -210,6 +227,7 @@ class Window(ModelingCommands,W.QMainWindow):
         self.act(file,"Импорт модели…",self.import_shape,key="import")
         self.act(file,"Экспорт тела…",self.export,key="export")
         self.act(file,"Сохранить журнал…",self.save_log)
+        self.act(file,"Сохранить диагностику…",self.save_diagnostics)
         self.act(edit,"Отменить",self.undo,"Ctrl+Z","undo")
         self.act(edit,"Вернуть",self.redo,"Ctrl+Y","redo")
         self.act(edit,"Удалить объект",self.remove,"Delete","delete")
@@ -292,6 +310,54 @@ class Window(ModelingCommands,W.QMainWindow):
         if name:
             Path(name).write_text(json.dumps(self.events,ensure_ascii=False,indent=2),encoding="utf-8")
 
+    def save_diagnostics(self):
+        from zipfile import ZIP_DEFLATED,ZipFile
+        name,_=W.QFileDialog.getSaveFileName(self,"Сохранить диагностику","RaySculpt-diagnostics.zip","ZIP (*.zip)")
+        if not name:
+            return
+        target=Path(name)
+        if not target.suffix:
+            target=target.with_suffix(".zip")
+        choice=W.QMessageBox.question(self,"Вложения диагностики",
+            "Приложить выбранные вручную изображения или модели?",
+            W.QMessageBox.Yes|W.QMessageBox.No,W.QMessageBox.No)
+        attachments=[]
+        if choice==W.QMessageBox.Yes:
+            attachments,_=W.QFileDialog.getOpenFileNames(self,"Выберите файлы для диагностики")
+        drivers=[]
+        if os.name=="nt":
+            import winreg
+            key=r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,key) as adapters:
+                    for i in range(winreg.QueryInfoKey(adapters)[0]):
+                        entry=winreg.EnumKey(adapters,i)
+                        if not entry.isdecimal():
+                            continue
+                        try:
+                            with winreg.OpenKey(adapters,entry) as adapter:
+                                drivers.append({field:winreg.QueryValueEx(adapter,field)[0]
+                                                for field in ("DriverDesc","DriverVersion")})
+                        except OSError:
+                            continue
+            except OSError:
+                pass
+        rays,resolution=self.quality()
+        report=dict(version=(ROOT/"VERSION").read_text(encoding="ascii").strip(),
+            system=C.QSysInfo.prettyProductName(),qt=C.qVersion(),display_drivers=drivers,
+            settings=dict(rays=rays,resolution=resolution,
+                          trace_memory_mib=self.trace_memory_mib,
+                          recovery_interval_seconds=self.recovery_timer.interval()//1000),
+            journal=self.events)
+        with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
+            staging=Path(tmp)/"diagnostics.zip"
+            with ZipFile(staging,"w",ZIP_DEFLATED) as archive:
+                archive.writestr("diagnostics.json",json.dumps(report,ensure_ascii=False,indent=2))
+                for index,attachment in enumerate(attachments,1):
+                    path=Path(attachment)
+                    archive.write(path,f"attachments/{index}-{path.name}")
+            os.replace(staging,target)
+
     def snapshot(self):
         return json.dumps(self.scene,sort_keys=True,ensure_ascii=False,allow_nan=False)
 
@@ -345,9 +411,18 @@ class Window(ModelingCommands,W.QMainWindow):
         return next((i for i in self.scene["objects"] if i["id"]==(key or self.selected)),None)
 
     def select(self,key):
-        if self.obj(key) is not None and self.selected!=key:
+        if key in self.tree_rows and self.selected!=key:
             self.selected=key
-            self.refresh()
+            self.cam.selected=key
+            if not self.active_step or self.active_step[0]!=key:
+                self.active_step=None
+                previous=self.tree.blockSignals(True)
+                self.tree.setCurrentItem(self.tree_rows[key])
+                self.tree.blockSignals(previous)
+            self.cam.update()
+            self.properties()
+            self.refresh_picks()
+            self.update_object_actions()
 
     def tree_selected(self,current,old):
         if current is not None:
@@ -403,6 +478,7 @@ class Window(ModelingCommands,W.QMainWindow):
                 if row.isExpanded():
                     expanded.add(row.data(0,Qt.UserRole))
         self.tree.clear()
+        self.tree_rows={}
         groups={}
         for label in ("Тела","Освещение","Экраны"):
             group=W.QTreeWidgetItem(self.tree,[label])
@@ -415,6 +491,7 @@ class Window(ModelingCommands,W.QMainWindow):
             role=" · инструмент" if obj["id"] in self.cam.consumed else (" · справочное" if obj.get("reference") else "")
             row=W.QTreeWidgetItem(groups[group],[obj["name"]+role])
             row.setData(0,Qt.UserRole,obj["id"])
+            self.tree_rows[obj["id"]]=row
             row.setExpanded(obj["id"] in expanded)
             self.feature_tree(row,obj)
             if obj["id"] in self.cam.errors:
@@ -431,25 +508,29 @@ class Window(ModelingCommands,W.QMainWindow):
         self.prev_issues=messages
         busy=self.proc is not None
         blocked=any(error for error,_,_ in issues)
-        obj=self.obj() or {}
         self.actions["trace"].setEnabled(not busy and not blocked)
         self.actions["design"].setEnabled(not busy and not blocked)
         self.actions["cancel"].setEnabled(busy)
         self.actions["clear3d"].setEnabled("turntable" in self.scene)
+        self.update_object_actions()
+        self.actions["undo"].setEnabled(bool(self.history))
+        self.actions["redo"].setEnabled(bool(self.future))
+        self.setWindowTitle((self.path.stem if self.path else "Новый проект")
+                            +(" *" if self.snapshot()!=self.saved else "")+"  —  Caustic CAD "+VERSION)
+        status=issues[0][2] if issues else (self.optical_issues[0][1] if self.optical_issues else "Готово к расчёту")
+        self.status.setText(self.job_label if busy else status)
+
+    def update_object_actions(self):
+        obj=self.obj() or {}
+        busy=self.proc is not None
         self.actions["export"].setEnabled(not busy and obj.get("kind") in model.SOLIDS)
         self.actions["cut"].setEnabled(obj.get("kind") in ("box","sphere","cylinder","cad","prism"))
         self.actions["sketch"].setEnabled(obj.get("kind")=="prism")
         self.actions["align"].setEnabled(obj.get("kind") in ("point","area","screen") and not obj["locked"] and "parent" not in obj)
         self.actions["uncut"].setEnabled("cut" in obj)
-        self.actions["mate"].setEnabled(bool(obj) and not obj.get("locked") and len(items)>1)
+        self.actions["mate"].setEnabled(bool(obj) and not obj.get("locked") and len(self.scene["objects"])>1)
         self.actions["unmate"].setEnabled("parent" in obj)
-        self.actions["undo"].setEnabled(bool(self.history))
-        self.actions["redo"].setEnabled(bool(self.future))
         self.actions["delete"].setEnabled(bool(obj) and not obj.get("locked"))
-        self.setWindowTitle((self.path.stem if self.path else "Новый проект")
-                            +(" *" if self.snapshot()!=self.saved else "")+"  —  Caustic CAD "+VERSION)
-        status=issues[0][2] if issues else (self.optical_issues[0][1] if self.optical_issues else "Готово к расчёту")
-        self.status.setText(self.job_label if busy else status)
 
     def properties(self):
         previous=self.props.takeWidget()
@@ -692,6 +773,85 @@ class Window(ModelingCommands,W.QMainWindow):
                                  W.QMessageBox.Save|W.QMessageBox.Discard|W.QMessageBox.Cancel,W.QMessageBox.Save)
         return self.save() if b==W.QMessageBox.Save else b==W.QMessageBox.Discard
 
+    def clear_recovery(self):
+        self.recovery_epoch+=1
+        self.recovery_snapshot=None
+        try:
+            self.recovery_path.unlink(missing_ok=True)
+            if self.recovery_source is not None:
+                self.recovery_source[0].unlink(missing_ok=True)
+        except OSError as error:
+            self.log(f"Не удалось удалить копию восстановления. {error}","warning")
+        finally:
+            if self.recovery_source is not None:
+                self.recovery_source[1].unlock()
+                self.recovery_source=None
+
+    def autosave_recovery(self):
+        if self.recovery_proc is not None:
+            return
+        snapshot=self.snapshot()
+        if snapshot in (self.saved,self.recovery_snapshot):
+            return
+        try:
+            RECOVERY.mkdir(parents=True,exist_ok=True)
+            if self.recovery_lock is None:
+                lock=C.QLockFile(str(self.recovery_path.with_suffix(".lock")))
+                lock.setStaleLockTime(0)
+                if not lock.tryLock(0):
+                    raise OSError("Не удалось зарезервировать копию восстановления")
+                self.recovery_lock=lock
+            staging=self.recovery_path.with_suffix(".tmp")
+            request=self.work/"recovery-request.json"
+            request.write_text(json.dumps(dict(task="recovery",scene=json.loads(snapshot),
+                               assets=str(self.assets),path=str(staging)),ensure_ascii=False),encoding="utf-8")
+        except OSError as error:
+            self.log(f"Ошибка копии восстановления. {error}","warning")
+            return
+
+        proc=C.QProcess(self)
+        self.recovery_proc=proc
+        epoch=self.recovery_epoch
+        python=Path(sys.executable)
+        if python.stem.lower()=="pythonw":
+            python=python.with_name("python.exe")
+        def finished(code,status):
+            if self.recovery_proc is not proc:
+                return
+            self.recovery_proc=None
+            try:
+                if code==0 and status==C.QProcess.NormalExit and epoch==self.recovery_epoch:
+                    os.replace(staging,self.recovery_path)
+                    self.recovery_snapshot=snapshot
+                elif epoch==self.recovery_epoch:
+                    self.log("Не удалось сохранить копию восстановления.","warning")
+            except OSError as error:
+                self.log(f"Ошибка копии восстановления. {error}","warning")
+            finally:
+                staging.unlink(missing_ok=True)
+                proc.deleteLater()
+        proc.finished.connect(finished)
+        proc.errorOccurred.connect(lambda error:finished(1,C.QProcess.CrashExit)
+                                   if error==C.QProcess.FailedToStart else None)
+        proc.start(str(python),[str(ROOT/"tools/cad_worker.py"),str(request)])
+
+    def offer_recovery(self):
+        for path in sorted(RECOVERY.glob("*.ccad"),key=lambda item:item.stat().st_mtime,reverse=True):
+            lock=C.QLockFile(str(path.with_suffix(".lock")))
+            lock.setStaleLockTime(0)
+            if not lock.tryLock(0):
+                continue
+            answer=W.QMessageBox.question(self,"Восстановление проекта",
+                "Найдена копия после незавершённого сеанса. Открыть её как отдельный проект?",
+                W.QMessageBox.Yes|W.QMessageBox.No,W.QMessageBox.Yes)
+            if answer==W.QMessageBox.Yes:
+                self.replace(model.load_scene(path,self.assets))
+                self.recovery_source=(path,lock)
+                self.saved=""
+            else:
+                lock.unlock()
+            break
+
     def replace(self,scene,path=None):
         model.validate(scene)
         topo.rebuild_mates(scene,self.assets)
@@ -709,6 +869,7 @@ class Window(ModelingCommands,W.QMainWindow):
         self.path=path
         self.selected=scene["objects"][0]["id"] if scene["objects"] else None
         self.saved=self.snapshot()
+        self.clear_recovery()
         self.tabs.setCurrentIndex(0)
         self.picks.clear()
         self.refresh()
@@ -736,6 +897,7 @@ class Window(ModelingCommands,W.QMainWindow):
         model.save_scene(self.scene,self.assets,path)
         self.saved=self.snapshot()
         self.path=path
+        self.clear_recovery()
         self.refresh()
         return True
 
@@ -917,7 +1079,7 @@ class Window(ModelingCommands,W.QMainWindow):
                 obj.update(material=key,line=line)
         self.mutate(apply)
 
-    def launch(self,task,label,program,args,out,callback):
+    def launch(self,task,label,program,args,out,callback,request=None):
         if self.proc:
             raise ValueError("Дождитесь завершения текущей операции")
         if not Path(program).is_file():
@@ -928,12 +1090,28 @@ class Window(ModelingCommands,W.QMainWindow):
         self.proc=proc
         revision=self.revision
         output=bytearray()
+        pending=bytearray()
         stopped=[False]
         self.stop_state=stopped
         def read():
-            output.extend(bytes(proc.readAllStandardOutput()))
+            chunk=bytes(proc.readAllStandardOutput())
+            output.extend(chunk)
             if len(output)>32000:
                 del output[:-32000]
+            if request is not None:
+                pending.extend(chunk)
+                lines=pending.split(b"\n")
+                pending[:]=lines.pop()[-32000:]
+                for line in lines:
+                    try:
+                        message=json.loads(line)
+                    except ValueError:
+                        continue
+                    if (message.get("event")=="progress" and message.get("job_id")==request["job_id"]
+                            and message.get("revision")==self.revision and self.proc is proc):
+                        stage=message.get("detail",{}).get("stage")
+                        if stage=="publishing":
+                            self.status.setText("Запись результата проверки проекции…")
         def done(code,status):
             read()
             if self.proc is not proc:
@@ -945,9 +1123,32 @@ class Window(ModelingCommands,W.QMainWindow):
                 self.log("Операция остановлена.")
             elif code or status==C.QProcess.CrashExit:
                 details=output.decode("utf-8",errors="replace").strip().splitlines()
-                self.log("Операция завершилась ошибкой. "+"\n".join(details[-6:]))
+                memory=False
+                for line in details:
+                    try:
+                        memory |= json.loads(line).get("detail",{}).get("code")=="memory"
+                    except (ValueError,AttributeError):
+                        memory |= "memory budget" in line or "insufficient memory" in line
+                if memory:
+                    message=("Не хватило памяти для трассировки. Увеличьте лимит памяти "
+                             "в меню «Оптика → Параметры проверки…» или уменьшите разрешение.")
+                    self.log(message,"warning")
+                    W.QMessageBox.warning(self,"Недостаточно памяти",message)
+                else:
+                    self.log("Операция завершилась ошибкой. "+"\n".join(details[-6:]))
             elif task!="export" and revision!=self.revision:
                 self.log("Сцена изменилась во время расчёта. Запустите расчёт для текущей версии.")
+            elif request is not None:
+                lines=output.decode("utf-8",errors="replace").strip().splitlines()
+                try:
+                    reply=json.loads(lines[-1]) if lines else {}
+                except ValueError:
+                    reply={}
+                if (reply.get("event")=="result" and reply.get("version")==request["version"]
+                        and reply.get("job_id")==request["job_id"] and reply.get("revision")==revision):
+                    self.guard(callback)
+                else:
+                    self.log("Рабочий процесс не вернул результат текущего задания.", "warning")
             else:
                 self.guard(callback)
         proc.readyReadStandardOutput.connect(read)
@@ -955,6 +1156,9 @@ class Window(ModelingCommands,W.QMainWindow):
         proc.errorOccurred.connect(lambda error:done(1,C.QProcess.CrashExit) if error==C.QProcess.FailedToStart else None)
         self.log(label)
         self.refresh()
+        self.native_request=request
+        if request is not None:
+            proc.started.connect(lambda:proc.write((json.dumps(request)+"\n").encode("utf-8")))
         proc.start(str(program),[str(a) for a in args])
         C.QTimer.singleShot(600000,proc,lambda:self.cancel() if self.proc is proc else None)
 
@@ -1029,13 +1233,22 @@ class Window(ModelingCommands,W.QMainWindow):
                     self.log(msg,"warning",[obj["id"]])
             self.refresh()
         args=["trace-scene",str(cfg),str(profile),str(out)]
+        budget=self.trace_memory_mib*1024*1024
         nearby=model.potential_relief_collisions(self.scene)
         if nearby:
             self.worker("checked_trace","Проверка пересечений и проекции…",
                         dict(scene=dict(objects=nearby),assets=str(self.assets),path=str(issues_file),
-                             cli=str(CLI),args=args),finished)
+                             cli=str(CLI),args=args,memory_limit_bytes=budget),finished)
         else:
-            self.launch("trace","Проверка проекции…",CLI,args,out,finished)
+            native=os.environ.get("RAYSCULPT_WORKER")
+            if native:
+                request=dict(version=1,job_id=out.name,revision=self.revision,task="trace",
+                             settings=str(cfg),profile=str(profile),output=str(out),
+                             memory_limit_bytes=budget)
+                self.launch("trace","Проверка проекции…",native,[CLI],out,finished,request=request)
+            else:
+                self.worker("trace","Проверка проекции…",dict(cli=str(CLI),args=args,
+                            memory_limit_bytes=budget),finished)
 
     def quality(self):
         return getattr(self,"ray_count",2000000),getattr(self,"resolution",256)
@@ -1053,23 +1266,56 @@ class Window(ModelingCommands,W.QMainWindow):
         resolution.setValue(self.quality()[1])
         form.addRow("Лучи",rays)
         form.addRow("Длинная сторона экрана, пикс.",resolution)
+        memory=W.QSpinBox()
+        memory.setRange(1,2_147_483_647)
+        memory.setSuffix(" МиБ")
+        memory.setValue(self.trace_memory_mib)
+        form.addRow("Общий лимит памяти трассировки",memory)
+        recovery=W.QSpinBox()
+        recovery.setRange(1,86_400)
+        recovery.setSuffix(" с")
+        recovery.setValue(self.recovery_timer.interval()//1000)
+        slider=W.QSlider(Qt.Horizontal)
+        slider.setRange(recovery.minimum(),recovery.maximum())
+        slider.setValue(recovery.value())
+        slider.valueChanged.connect(recovery.setValue)
+        recovery.valueChanged.connect(slider.setValue)
+        form.addRow("Интервал копии восстановления",recovery)
+        form.addRow(slider)
         buttons=W.QDialogButtonBox(W.QDialogButtonBox.Ok|W.QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         form.addRow(buttons)
         if dlg.exec()==W.QDialog.Accepted:
             self.ray_count,self.resolution=rays.value(),resolution.value()
+            self.trace_memory_mib=memory.value()
+            self.recovery_timer.start(recovery.value()*1000)
+            settings=C.QSettings("Caustic CAD","Caustic CAD")
+            settings.setValue("recovery_interval_seconds",recovery.value())
+            settings.setValue("trace_memory_mib",self.trace_memory_mib)
 
-    def design(self):
-        plate,lamp,screens=model.optical_setup(self.scene)
-        if any("image" not in s for s in screens) and "turntable" not in self.scene:
-            raise ValueError("Назначьте изображение каждому экрану или выберите 3D-цель")
-        if "turntable" in self.scene:
+    def design(self, geometry_checked=False):
+        mode,reason=model.design_mode(self.scene)
+        if mode=="INVALID":
+            self.refresh()
+            raise ValueError(reason)
+        nearby=[] if geometry_checked else model.potential_relief_collisions(self.scene)
+        if nearby:
+            report_path=self.work/(uuid4().hex+".json")
+            def checked():
+                reports=json.loads(report_path.read_text(encoding="utf-8"))
+                if reports:
+                    self.show_inspection(reports)
+                if not any(item["severity"]=="error" for item in reports):
+                    self.design(geometry_checked=True)
+            return self.worker("inspect","Проверка пересечений перед синтезом…",
+                               dict(scene=dict(objects=nearby),assets=str(self.assets),
+                                    path=str(report_path)),checked)
+        self.log(reason)
+        if mode=="SKETCH":
+            plate,_,_=model.optical_setup(self.scene)
             return self.fit_scene(plate)
-        try:
-            plate,screen,source,dist=model.design_geometry(self.scene)
-        except ValueError:
-            return self.fit_scene(plate)
+        plate,screen,source,dist=model.design_geometry(self.scene)
         quality,ok=W.QInputDialog.getItem(self,"Построение рельефа","Точность синтеза",
                  ["Эскиз · 96 пикселей","Стандарт · 256 пикселей","Детально · 448 пикселей"],1,False)
         if not ok:
@@ -1089,6 +1335,10 @@ class Window(ModelingCommands,W.QMainWindow):
               "--index",model.index(self.scene,plate),"--plate",plate["dims"]["w"],"--thickness",thick,
               "--width",screen["dims"]["w"],"--source",source,"--screen",dist,
               "--max-relief",min(thick*.9,(dist-thick)*.9),"--formats","stl"]
+        for flag,name in (("--transport-worker","RAYSCULPT_TRANSPORT_LIBRARY"),
+                          ("--poisson-adapter","RAYSCULPT_SPECTRAL_FILTER")):
+            if value:=os.environ.get(name):
+                args.extend((flag,value))
         def finished():
             report=json.loads((out/"report.json").read_text())
             self.mutate(lambda:self.attach_profile(plate,out/"surface.txt"))
@@ -1134,18 +1384,21 @@ class Window(ModelingCommands,W.QMainWindow):
         def finished():
             out=folder/"result"
             report=json.loads((out/"validation.json").read_text())
-            if report["final"]<report["initial"] and any(s["flux"]>0 for s in report["screens"]):
+            if report["accepted"]:
                 self.mutate(lambda:self.attach_profile(plate,out/"surface.txt"))
             else:
-                self.log("Подбор не улучшил плоскую заготовку. Рельеф в модели сохранён.")
-                return
+                self.log("Подбор не прошёл проверку. Рельеф в модели сохранён.", "warning")
             self.result=(out,report)
             self.screen_choice.clear()
             for row in report["screens"]:
                 tag=" · промежуточный вид" if row["intermediate"] else ""
+                if not report["accepted"]:
+                    tag+=" · отклонённый вариант"
                 name=f'{row["name"]} · {row["angle"]:g}°{tag}'
                 self.screen_choice.addItem(name)
-                self.log(f'{name} · ошибка яркости {row["error"]:.3f}, поток {row["flux"]:.5g}')
+                self.log(f'{name} · RMS {row["error"]:.3f}, плоская {row["flat_error"]:.3f}, '
+                         f'допуск {row["tolerance"]:.3f}, поток {row["flux"]:.5g}',
+                         "info" if row["passed"] else "warning")
             self.show_image()
             self.tabs.setCurrentIndex(1)
             self.log(f'Эскизный подбор общей поверхности · {report["evaluations"]} оценок, '
@@ -1177,7 +1430,15 @@ class Window(ModelingCommands,W.QMainWindow):
     def cancel(self):
         if self.proc:
             self.stop_state[0]=True
-            self.proc.kill()
+            proc=self.proc
+            if self.native_request is None or proc.state()!=C.QProcess.Running:
+                proc.kill()
+            else:
+                request=self.native_request
+                signal=dict(version=request["version"],job_id=request["job_id"],
+                            revision=request["revision"],event="cancel")
+                proc.write((json.dumps(signal)+"\n").encode("utf-8"))
+                C.QTimer.singleShot(1500,proc,lambda:proc.kill() if self.proc is proc else None)
 
     def closeEvent(self,event):
         if not self.guard(self.confirm):
@@ -1187,6 +1448,13 @@ class Window(ModelingCommands,W.QMainWindow):
             proc=self.proc
             self.cancel()
             proc.waitForFinished(5000)
+        self.clear_recovery()
+        if self.recovery_proc is not None:
+            proc=self.recovery_proc
+            proc.kill()
+            proc.waitForFinished(5000)
+        if self.recovery_lock is not None:
+            self.recovery_lock.unlock()
         super().closeEvent(event)
 
 
@@ -1199,6 +1467,8 @@ def main():
     if len(sys.argv)>1:
         path=Path(sys.argv[1]).resolve()
         window.guard(lambda:window.replace(model.load_scene(path,window.assets),path))
+    else:
+        window.guard(window.offer_recovery)
     window.show()
     sys.exit(app.exec())
 

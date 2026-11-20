@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -32,7 +35,10 @@ struct RayOutcome {
 
 struct ThreadState {
     std::vector<std::vector<double>> images;
+    std::vector<std::uint64_t> hits;
     TraceStats stats;
+    double intersection_ns = 0.0, accumulation_ns = 0.0;
+    std::uint64_t intersection_samples = 0, accumulation_samples = 0;
 };
 
 bool positive_finite(double x) { return std::isfinite(x) && x > 0.0; }
@@ -289,7 +295,8 @@ bool receiver_intersection(const RectReceiver& receiver, Vec3 origin, Vec3 direc
 RayOutcome trace_one(const HeightField& plate, const PlatePose& pose,
                      const LightSource& source, const std::vector<RectReceiver>& receivers,
                      const TraceConfig& config, std::uint64_t ray_index,
-                     double rotation_cos, double rotation_sin, const SplineBounds* bounds) {
+                     double rotation_cos, double rotation_sin, const SplineBounds* bounds,
+                     ThreadState* timing) {
     RayOutcome outcome;
     double sample_x = random01(config.seed, ray_index, 0);
     double sample_y = random01(config.seed, ray_index, 1);
@@ -356,8 +363,14 @@ RayOutcome trace_one(const HeightField& plate, const PlatePose& pose,
         return outcome;
     }
     ExitHit exit;
+    using Clock = std::chrono::steady_clock;
+    const auto start = timing ? Clock::now() : Clock::time_point{};
     const auto exit_status = bounds ? intersect_spline(plate, *bounds, front, inside, exit)
                                     : intersect_exit(plate, front, inside, exit);
+    if (timing) {
+        timing->intersection_ns += std::chrono::duration<double,std::nano>(Clock::now()-start).count();
+        ++timing->intersection_samples;
+    }
     switch (exit_status) {
     case ExitStatus::SideEscape:
         outcome.kind = RayOutcome::Kind::SideEscape;
@@ -498,10 +511,67 @@ void add_stats(TraceStats& a, const TraceStats& b) {
 
 } // namespace
 
+struct TraceWorkspace::State {
+    std::mutex mutex;
+    std::condition_variable ready, finished;
+    std::function<void(std::size_t)> task;
+    std::size_t remaining = 0, generation = 0;
+    bool stopping = false;
+    std::vector<std::jthread> workers;
+    std::vector<ThreadState> accumulators;
+
+    explicit State(std::size_t count) : accumulators(count) {
+        workers.reserve(count);
+        try {
+            for (std::size_t index = 0; index < count; ++index)
+                workers.emplace_back([this,index] {
+                    std::unique_lock lock(mutex);
+                    std::size_t seen = 0;
+                    for (;;) {
+                        ready.wait(lock,[&] { return stopping || generation != seen; });
+                        if (stopping) return;
+                        seen = generation;
+                        lock.unlock();
+                        task(index);
+                        lock.lock();
+                        if (--remaining == 0) finished.notify_one();
+                    }
+                });
+        } catch (...) {
+            stop();
+            throw;
+        }
+    }
+
+    void stop() {
+        {
+            std::lock_guard lock(mutex);
+            stopping = true;
+        }
+        ready.notify_all();
+        workers.clear();
+    }
+
+    ~State() { stop(); }
+
+    void run(std::function<void(std::size_t)> next) {
+        std::unique_lock lock(mutex);
+        task = std::move(next);
+        remaining = workers.size();
+        ++generation;
+        ready.notify_all();
+        finished.wait(lock,[&] { return remaining == 0; });
+        task = {};
+    }
+};
+
+TraceWorkspace::TraceWorkspace() = default;
+TraceWorkspace::~TraceWorkspace() = default;
+
 TraceResult trace_caustic(const HeightField& plate, const PlatePose& pose,
                          const LightSource& source,
                          const std::vector<RectReceiver>& receivers,
-                         const TraceConfig& config) {
+                         const TraceConfig& config, TraceWorkspace* workspace) {
     const auto started = std::chrono::steady_clock::now();
     const std::size_t requested_threads = config.thread_count != 0 ? config.thread_count :
                                           std::max(1u, std::thread::hardware_concurrency());
@@ -519,9 +589,23 @@ TraceResult trace_caustic(const HeightField& plate, const PlatePose& pose,
         result.images.push_back({receiver.id, receiver.image_width_px, receiver.image_height_px,
                                  std::vector<double>(pixels, 0.0)});
     }
-    std::vector<ThreadState> thread_states(threads);
+    std::vector<ThreadState> transient;
+    if (workspace && (!workspace->state_ || workspace->state_->workers.size() != threads))
+        workspace->state_ = std::make_unique<TraceWorkspace::State>(threads);
+    if (!workspace) transient.resize(threads);
+    auto& thread_states = workspace ? workspace->state_->accumulators : transient;
     for (auto& state : thread_states) {
+        if (workspace && (state.images.size() != receivers.size() ||
+                !std::equal(state.images.begin(),state.images.end(),receivers.begin(),
+                    [](const auto& image, const auto& receiver) {
+                        return image.size() == std::size_t(receiver.image_width_px)*receiver.image_height_px;
+                    })))
+            state.images.clear();
         state.images.resize(receivers.size());
+        state.hits.assign(receivers.size(),0);
+        state.stats = {};
+        state.intersection_ns = state.accumulation_ns = 0.0;
+        state.intersection_samples = state.accumulation_samples = 0;
         for (std::size_t r = 0; r < receivers.size(); ++r) {
             const std::size_t pixels = static_cast<std::size_t>(receivers[r].image_width_px) *
                                        receivers[r].image_height_px;
@@ -532,10 +616,7 @@ TraceResult trace_caustic(const HeightField& plate, const PlatePose& pose,
     const double rotation_cos = std::cos(radians);
     const double rotation_sin = std::sin(radians);
     std::atomic_int stop{0}; // 0 running, 1 user cancel, 2 time budget.
-    std::vector<std::thread> workers;
-    workers.reserve(threads);
-    for (std::size_t worker = 0; worker < threads; ++worker) {
-        workers.emplace_back([&, worker] {
+    const auto process_rays = [&](std::size_t worker) {
             const std::uint64_t quotient = config.ray_count / threads;
             const std::uint64_t remainder = config.ray_count % threads;
             const std::uint64_t begin = quotient * worker + std::min<std::uint64_t>(worker, remainder);
@@ -557,23 +638,47 @@ TraceResult trace_caustic(const HeightField& plate, const PlatePose& pose,
                         break;
                     }
                 }
+                const bool sample = config.profile_timing && (i % 1024 == 0);
                 const RayOutcome ray = trace_one(plate, pose, source, receivers, config, i,
-                                                 rotation_cos, rotation_sin, smooth ? &bounds : nullptr);
+                                                 rotation_cos, rotation_sin, smooth ? &bounds : nullptr,
+                                                 sample ? &local : nullptr);
                 count_outcome(local.stats, ray.kind);
-                if (ray.kind == RayOutcome::Kind::ReceiverHit)
+                if (ray.kind == RayOutcome::Kind::ReceiverHit) {
+                    using Clock = std::chrono::steady_clock;
+                    const auto start = sample ? Clock::now() : Clock::time_point{};
                     local.images[ray.receiver][ray.pixel] += ray.flux;
+                    ++local.hits[ray.receiver];
+                    if (sample) {
+                        local.accumulation_ns += std::chrono::duration<double,std::nano>(Clock::now()-start).count();
+                        ++local.accumulation_samples;
+                    }
+                }
             }
-        });
+    };
+    if (workspace) {
+        workspace->state_->run(process_rays);
+    } else {
+        std::vector<std::jthread> workers;
+        workers.reserve(threads);
+        for (std::size_t worker = 0; worker < threads; ++worker)
+            workers.emplace_back(process_rays,worker);
     }
-    for (auto& worker : workers) worker.join();
+    const auto reduction_start = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < threads; ++i) {
         add_stats(result.stats, thread_states[i].stats);
+        result.sampled_intersection_ns += thread_states[i].intersection_ns;
+        result.sampled_accumulation_ns += thread_states[i].accumulation_ns;
+        result.intersection_samples += thread_states[i].intersection_samples;
+        result.accumulation_samples += thread_states[i].accumulation_samples;
         for (std::size_t r = 0; r < receivers.size(); ++r) {
+            result.images[r].hits += thread_states[i].hits[r];
             auto& output = result.images[r].values;
             const auto& local = thread_states[i].images[r];
             for (std::size_t p = 0; p < output.size(); ++p) output[p] += local[p];
         }
     }
+    result.reduction_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now()-reduction_start).count();
     const int reason = stop.load(std::memory_order_relaxed);
     result.stop_reason = reason == 1 ? TraceStopReason::Cancelled :
                          reason == 2 ? TraceStopReason::TimedOut : TraceStopReason::Completed;

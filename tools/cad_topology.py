@@ -2,6 +2,7 @@
 from functools import lru_cache
 import json
 import math
+import os
 import numpy as np
 
 from cad_geometry import primitive, transformed, load_mesh
@@ -118,30 +119,47 @@ def mesh_source(path):
     return load_mesh(path)
 
 
+@lru_cache(maxsize=3)
+def mesh_acceleration(path,library):
+    from mesh_native import MeshIndex
+    return MeshIndex(library,*mesh_source(path))
+
+
+def mesh_intersection(xyz,tri,ray,direction):
+    # Möller–Trumbore against the original geometry, independent of display LOD.
+    a,b,c=xyz[tri].transpose(1,0,2)
+    e1,e2=b-a,c-a
+    h=np.cross(direction,e2)
+    det=np.einsum("ij,ij->i",e1,h)
+    valid=abs(det)>1e-12
+    inv=np.divide(1,det,out=np.zeros_like(det),where=valid)
+    off=ray-a
+    u=np.einsum("ij,ij->i",off,h)*inv
+    q=np.cross(off,e1)
+    v=(q@direction)*inv
+    dist=np.einsum("ij,ij->i",e2,q)*inv
+    hits=np.flatnonzero(valid&(u>=0)&(v>=0)&(u+v<=1))
+    if not len(hits):
+        raise ValueError("Укажите участок исходной сетки")
+    j=int(hits[np.argmin(dist[hits])])
+    return j,dist[j]
+
+
+
 def ref_for(scene,obj,folder,kind,ray,direction,tolerance):
     """Ray and direction in object coordinates. Distances are in millimetres."""
     ref=dict(object=obj["id"],kind=kind,index=0)
     if kind=="center":
         return ref
     if obj["kind"]=="mesh":
-        xyz,tri=mesh_source(folder/obj["asset"])
-        # Möller–Trumbore against the original geometry, independent of display LOD.
-        a,b,c=xyz[tri].transpose(1,0,2)
-        e1,e2=b-a,c-a
-        h=np.cross(direction,e2)
-        det=np.einsum("ij,ij->i",e1,h)
-        valid=abs(det)>1e-12
-        inv=np.divide(1,det,out=np.zeros_like(det),where=valid)
-        off=ray-a
-        u=np.einsum("ij,ij->i",off,h)*inv
-        q=np.cross(off,e1)
-        v=(q@direction)*inv
-        dist=np.einsum("ij,ij->i",e2,q)*inv
-        hits=np.flatnonzero(valid&(u>=0)&(v>=0)&(u+v<=1))
-        if not len(hits):
-            raise ValueError("Укажите участок исходной сетки")
-        j=int(hits[np.argmin(dist[hits])])
-        hit=ray+dist[j]*direction
+        path=folder/obj["asset"]
+        xyz,tri=mesh_source(path)
+        library=os.environ.get("RAYSCULPT_MESH_INDEX")
+        if library:
+            j,distance=mesh_acceleration(path,library).nearest(ray,direction)
+        else:
+            j,distance=mesh_intersection(xyz,tri,ray,direction)
+        hit=ray+distance*direction
         ids=tri[j]
         ref["index"]=j
         if kind=="vertex":

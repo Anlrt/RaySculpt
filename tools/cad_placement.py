@@ -95,18 +95,20 @@ def search(req):
         config=directory/f"{j}.txt"
         config.write_text(trace_settings(test,64,120000),encoding="ascii")
         out=directory/str(j)
-        subprocess.run([ROOT/"build/Release/caustic_cli.exe","trace-scene",config,assets/plate["profile"],out],check=True)
+        subprocess.run([ROOT/"build/Release/caustic_cli.exe","trace-scene",config,
+                        assets/plate["profile"],out,"0","1"],check=True)
         report=json.loads((out/"report.json").read_text())
         entry=report["screens"][screens.index(screen)]
         if entry["flux"]<=0:
             row["score"]=float("inf")
             continue
-        row["capture"]=report["hit"]/report["rays"]
+        row["capture"]=entry["hits"]/report["rays"]
         if target is not None:
             import cv2
-            with Image.open(out/entry["image"]) as im:
-                encoded=np.asarray(im.convert("L"),dtype=float)/255
-            actual=np.where(encoded<=.04045,encoded/12.92,((encoded+.055)/1.055)**2.4)
+            image=out/entry["image"]
+            with Image.open(image) as preview:
+                cols,rows=preview.size
+            actual=np.fromfile(image.with_suffix(".f64"),dtype="<f8").reshape(rows,cols)
             goal=cv2.resize(target,(actual.shape[1],actual.shape[0]),interpolation=cv2.INTER_AREA)
             gain=np.sum(actual*goal)/max(1e-15,np.sum(actual**2))
             row["error"]=float(np.linalg.norm(actual*gain-goal)/max(1e-12,np.linalg.norm(goal)))

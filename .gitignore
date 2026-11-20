@@ -1,5 +1,6 @@
 # CMake, Visual Studio and local dependency installs
 /build/
+/target/
 /out/
 /cmake-build-*/
 /.vs/

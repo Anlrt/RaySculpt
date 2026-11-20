@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -155,7 +156,7 @@ void print_usage() {
         << "      [--stl-height-mm MM] [--stl-normal-deg DEG] [--formats step,brep,stl,3mf,obj]\n"
         << "  caustic_cli export-plate DESIGN --out FILE_OR_NEW_DIR [--formats step,brep,stl,3mf,obj] [--cells N]\n"
         << "  caustic_cli trace-photo PROFILE TARGET.pgm NEW_DIR RAYS MAX_MESH_CELLS [SEED]\n"
-        << "  caustic_cli trace-scene SETTINGS PROFILE_OR_DASH NEW_DIR [ANGLE]\n"
+        << "  caustic_cli trace-scene SETTINGS PROFILE_OR_DASH NEW_DIR [ANGLE [VALIDATION_SEED [CANCEL_FILE]]]\n"
         << "  caustic_cli fit-scene INPUT_DIR NEW_DIR\n"
         << "  Photo design: python tools/design_photo.py IMAGE --out NEW_DIR\n";
 }
@@ -170,8 +171,26 @@ int CAUSTIC_ENTRY(int argc, ArgChar** argv) {
         }
         const ArgString command = argv[1];
         if (is_option(command, "trace-scene")) {
-            if (argc != 5 && argc !=6) throw std::invalid_argument("trace-scene needs settings, profile or -, output and optional angle");
-            caustic::trace_scene(as_path(argv[2]), as_path(argv[3]), as_path(argv[4]),argc==6 ? as_double(argv[5]) : 0.);
+            int max_args = 8;
+            std::uint32_t profile_threads = 0;
+#ifdef CAUSTIC_REFERENCE_TRACE
+            max_args = 9;
+            if (argc == 9) {
+                const int count = as_int(argv[8]);
+                if (count < 1 || count > 24) throw std::invalid_argument("profile threads outside [1,24]");
+                profile_threads = static_cast<std::uint32_t>(count);
+            }
+#endif
+            if (argc < 5 || argc > max_args) throw std::invalid_argument("invalid trace-scene arguments");
+            std::optional<std::uint64_t> seed;
+            if (argc >= 7) {
+                const auto value = as_int(argv[6]);
+                if (value < 0) throw std::invalid_argument("validation seed must be nonnegative");
+                seed = static_cast<std::uint64_t>(value);
+            }
+            caustic::trace_scene(as_path(argv[2]), as_path(argv[3]), as_path(argv[4]),
+                                 argc >= 6 ? as_double(argv[5]) : 0., seed,
+                                 argc >= 8 ? as_path(argv[7]) : std::filesystem::path{}, profile_threads);
             return 0;
         }
         if (is_option(command, "fit-scene")) {
@@ -271,6 +290,9 @@ int CAUSTIC_ENTRY(int argc, ArgChar** argv) {
             std::cout << "wrote monochrome target image\n";
         }
         return 0;
+    } catch (const std::bad_alloc&) {
+        std::cerr << "error: insufficient memory\n";
+        return 1;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
         return 1;

@@ -1,0 +1,501 @@
+{
+  "trace_threads": 12,
+  "trace_seed": 1,
+  "linear_encoding": "little-endian float64 row-major",
+  "cases": {
+    "flat": {
+      "settings": "40.0 8.0 1.491 2000000 0 -1.469576158976824e-14 1.469576158976824e-14 -240.0 1.0 0.0 0.0 0.0 1.0 0.0 0 0 1 7.654042494670958e-15 -7.654042494670958e-15 125.0 1.0 0.0 0.0 -0.0 -1.0 -0.0 50.0 50.0 256 256",
+      "resolution": 256,
+      "rays": 2000000,
+      "material": {
+        "name": "PLEXIGLAS GS / XT",
+        "density": 1.19,
+        "default": "589.3",
+        "indices": {
+          "589.3": 1.491
+        },
+        "source": "https://www.plexiglas.de/files/plexiglas-content/pdf/technische-informationen/211-1-PLEXIGLAS-GS-XT-EN.pdf"
+      },
+      "line": "589.3",
+      "profile": null,
+      "design_report": null,
+      "checks": [
+        {
+          "angle_deg": 0,
+          "report": {
+            "n": 1.491,
+            "rays": 2000000,
+            "hit": 1370934,
+            "tir": 0,
+            "miss": 542750,
+            "side": 86316,
+            "rejected": 0,
+            "peak": 9.6912873077773e-06,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.017506664584598
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 524288,
+              "sha256": "ebd8e948f3c1061059c2bd1ef27ddf7d8bc3c832bc6ba7e3d83a789c16c21a6a"
+            },
+            "1.png": {
+              "bytes": 44159,
+              "sha256": "bda60588f99b7d86074086629c0eaf09903fd138b12a1c4652a3162806557d45"
+            },
+            "report.json": {
+              "bytes": 172,
+              "sha256": "bd0e260edab81e84066a78b52906f82f2867de089dbdd9608b8e07920053cad9"
+            }
+          }
+        }
+      ]
+    },
+    "arrow": {
+      "settings": "40.0 8.0 1.491 1000000 0 -1.469576158976824e-14 1.469576158976824e-14 -240.0 1.0 0.0 0.0 0.0 1.0 0.0 0 0 1 7.654042494670958e-15 -7.654042494670958e-15 125.0 1.0 0.0 0.0 -0.0 -1.0 -0.0 50.0 50.0 96 96",
+      "resolution": 96,
+      "rays": 1000000,
+      "material": {
+        "name": "PLEXIGLAS GS / XT",
+        "density": 1.19,
+        "default": "589.3",
+        "indices": {
+          "589.3": 1.491
+        },
+        "source": "https://www.plexiglas.de/files/plexiglas-content/pdf/technische-informationen/211-1-PLEXIGLAS-GS-XT-EN.pdf"
+      },
+      "line": "589.3",
+      "profile": {
+        "bytes": 163447,
+        "sha256": "dd777819be0c543a0b11fbcc10c688317e9581cdf00e8483eeeec01c7b823308"
+      },
+      "design_report": {
+        "grid": 96,
+        "mesh_cells": 95,
+        "triangles": 19190,
+        "picture_px": [
+          96,
+          96
+        ],
+        "guard_px": [
+          12,
+          12
+        ],
+        "picture_mm": [
+          50,
+          50
+        ],
+        "rays": 1000000,
+        "hit": 960243,
+        "side_escape": 39757,
+        "miss": 0,
+        "tir": 0,
+        "unresolved": 0,
+        "captured_flux_guard_pct": 0.000205616745817,
+        "picture_relative_rmse": 0.102244824288,
+        "calibration_relative_rmse": [
+          0.101872843639
+        ],
+        "calibration_scores": [
+          0.07500277902677024
+        ],
+        "selected_pass": 1,
+        "calibration_stop": "iteration budget",
+        "map_size": 96,
+        "transport_max_steps": 100,
+        "shadow_floor": 0.08,
+        "model_files": [
+          "02_plate.stl"
+        ]
+      },
+      "checks": [
+        {
+          "angle_deg": 0,
+          "report": {
+            "n": 1.491,
+            "rays": 1000000,
+            "hit": 960276,
+            "tir": 0,
+            "miss": 2,
+            "side": 39722,
+            "rejected": 0,
+            "peak": 3.7434690583207e-05,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.024477649654237
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 73728,
+              "sha256": "c74c1358159ce85a20e81f92fe2eb1811b841653a0c3294650b02932cfab1183"
+            },
+            "1.png": {
+              "bytes": 5007,
+              "sha256": "7d546a3d4636da45e6002954954547ad3a0d431aaf7c003c42c392fd66d4d667"
+            },
+            "report.json": {
+              "bytes": 166,
+              "sha256": "0290e2f12b8a66bc864df4df5cab7771e84fc50c6b7a8c8895467676e1e6fe7f"
+            }
+          }
+        }
+      ]
+    },
+    "portrait": {
+      "settings": "40.0 8.0 1.49 2000000 0 0.0 0.0 -600.0 1.0 0.0 0.0 0.0 1.0 0.0 0 0 1 0.0 0.0 260.0 1.0 0.0 0.0 -0.0 -1.0 -0.0 50.0 65.11627906976744 197 256",
+      "resolution": 256,
+      "rays": 2000000,
+      "material": {
+        "name": "Из профиля · n 1.49",
+        "density": null,
+        "default": "nominal",
+        "indices": {
+          "nominal": 1.49
+        },
+        "source": ""
+      },
+      "line": "nominal",
+      "profile": {
+        "bytes": 8297019,
+        "sha256": "1dc2c99d1ac369331c9d2285bc446f853313264651d4226f21cccbec65e4cd09"
+      },
+      "design_report": null,
+      "checks": [
+        {
+          "angle_deg": 0,
+          "report": {
+            "n": 1.49,
+            "rays": 2000000,
+            "hit": 1963586,
+            "tir": 0,
+            "miss": 555,
+            "side": 35859,
+            "rejected": 0,
+            "peak": 6.0716863358306e-06,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.0040276912970028
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 403456,
+              "sha256": "da3c56f9d85d2a109b5495a48fc5c31edf929844d2faee8867ffaf15e9078e07"
+            },
+            "1.png": {
+              "bytes": 35997,
+              "sha256": "842e45641f8766be6926913a9da7b1815d4613a3177ee8039e53727ba8fc4e84"
+            },
+            "report.json": {
+              "bytes": 169,
+              "sha256": "6e9a81e7026484b8c339672a5e9a3d2f6a150919d2cc915df7537db01ff0c64a"
+            }
+          }
+        }
+      ]
+    },
+    "two_screens": {
+      "settings": "40.0 8.0 1.491 240000 0 -1.469576158976824e-14 1.469576158976824e-14 -240.0 1.0 0.0 0.0 0.0 1.0 0.0 0 0 2 -12.499999999999993 -7.654042494670958e-15 125.0 1.0 0.0 0.0 -0.0 -1.0 -0.0 25.0 40.0 60 96 12.500000000000007 -7.654042494670958e-15 125.0 1.0 0.0 0.0 -0.0 -1.0 -0.0 25.0 40.0 60 96",
+      "resolution": 96,
+      "rays": 240000,
+      "material": {
+        "name": "PLEXIGLAS GS / XT",
+        "density": 1.19,
+        "default": "589.3",
+        "indices": {
+          "589.3": 1.491
+        },
+        "source": "https://www.plexiglas.de/files/plexiglas-content/pdf/technische-informationen/211-1-PLEXIGLAS-GS-XT-EN.pdf"
+      },
+      "line": "589.3",
+      "profile": {
+        "bytes": 286,
+        "sha256": "715a967b787c4d4948ae5760670a40f89eb63b1b2d5eef67f006996a734a35a7"
+      },
+      "design_report": {
+        "initial": 1.05760879017,
+        "final": 0.181630752451,
+        "evaluations": 490,
+        "seconds_limit": false,
+        "screens": [
+          {
+            "image": "angle0/1.png",
+            "name": "Экран",
+            "angle": 0.0,
+            "intermediate": false,
+            "flux": 0.0069988685835476,
+            "error": 0.3237283516724923
+          },
+          {
+            "image": "angle0/2.png",
+            "name": "Экран",
+            "angle": 0.0,
+            "intermediate": false,
+            "flux": 0.007120780991472,
+            "error": 0.2563076435913238
+          }
+        ]
+      },
+      "checks": [
+        {
+          "angle_deg": 0,
+          "report": {
+            "n": 1.491,
+            "rays": 240000,
+            "hit": 132616,
+            "tir": 0,
+            "miss": 96848,
+            "side": 10536,
+            "rejected": 0,
+            "peak": 5.4692997799626e-05,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.0069988685835476
+              },
+              {
+                "image": "2.png",
+                "flux": 0.007120780991472
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 46080,
+              "sha256": "655d2d5b456fc04055724d88531d1d30c6b301e3f2c65989c07130b742c6be1e"
+            },
+            "1.png": {
+              "bytes": 4068,
+              "sha256": "f27f0114ed60d889c8b44b61c5be6a2528d4e89d16abd67de1d3f6d49f08b2ce"
+            },
+            "2.f64": {
+              "bytes": 46080,
+              "sha256": "28507a4546f9c169efc916da24e6f02ef845540ec4190934f69525e94ad5fdb1"
+            },
+            "2.png": {
+              "bytes": 3857,
+              "sha256": "2acbb267dc766cd57a006f712e5a1a5ab2684b31e7f347880524e04a888ae17d"
+            },
+            "report.json": {
+              "bytes": 213,
+              "sha256": "4552304b7bc10fc025379dbf2b357d1855ddaed343ca0bf0a4dc13a6f567bb63"
+            }
+          }
+        }
+      ]
+    },
+    "two_angles": {
+      "settings": "40.0 8.0 1.491 240000 0 -1.469576158976824e-14 1.469576158976824e-14 -240.0 1.0 0.0 0.0 0.0 1.0 0.0 0 0 1 7.654042494670958e-15 -7.654042494670958e-15 125.0 1.0 0.0 0.0 -0.0 -1.0 -0.0 50.0 50.0 96 96",
+      "resolution": 96,
+      "rays": 240000,
+      "material": {
+        "name": "PLEXIGLAS GS / XT",
+        "density": 1.19,
+        "default": "589.3",
+        "indices": {
+          "589.3": 1.491
+        },
+        "source": "https://www.plexiglas.de/files/plexiglas-content/pdf/technische-informationen/211-1-PLEXIGLAS-GS-XT-EN.pdf"
+      },
+      "line": "589.3",
+      "profile": {
+        "bytes": 272,
+        "sha256": "ed7e3d971d0de84ec89b50f536f29c76a70909dffba8f538b362b5d850a4eb3e"
+      },
+      "design_report": {
+        "initial": 2.74246865218,
+        "final": 1.43489748493,
+        "evaluations": 490,
+        "seconds_limit": false,
+        "screens": [
+          {
+            "image": "angle0/1.png",
+            "name": "Экран",
+            "angle": -8.0,
+            "intermediate": false,
+            "flux": 0.012252948099829,
+            "error": 0.6116372279424609
+          },
+          {
+            "image": "angle1/1.png",
+            "name": "Экран",
+            "angle": 0.0,
+            "intermediate": true,
+            "flux": 0.012456923345432,
+            "error": 0.6385079665387884
+          },
+          {
+            "image": "angle2/1.png",
+            "name": "Экран",
+            "angle": 8.0,
+            "intermediate": false,
+            "flux": 0.012492750546954,
+            "error": 0.6454149695881268
+          }
+        ]
+      },
+      "checks": [
+        {
+          "angle_deg": -8,
+          "report": {
+            "n": 1.491,
+            "rays": 240000,
+            "hit": 115684,
+            "tir": 0,
+            "miss": 110826,
+            "side": 13490,
+            "rejected": 0,
+            "peak": 3.5499466139471e-05,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.012252948099829
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 73728,
+              "sha256": "a9d226bcf1da2c26d97c3834b3dec9a5ab0d5e0c984db05afa3a407f1e96bd38"
+            },
+            "1.png": {
+              "bytes": 6470,
+              "sha256": "4ca4ef3ba8fc425b7c8e908106d109b11f9a7fde8814955fd3fbe80315935d5d"
+            },
+            "report.json": {
+              "bytes": 170,
+              "sha256": "319a9dfe6533f3d73c09b3f855812502749770ad090c5ad5eeeb7288a41551ca"
+            }
+          }
+        },
+        {
+          "angle_deg": 0,
+          "report": {
+            "n": 1.491,
+            "rays": 240000,
+            "hit": 116905,
+            "tir": 0,
+            "miss": 111767,
+            "side": 11328,
+            "rejected": 0,
+            "peak": 3.6967990229083e-05,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.012456923345432
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 73728,
+              "sha256": "db319891f9908b463b88a79350ec10e6e93d1a44dd87daf7b13927441703a2bd"
+            },
+            "1.png": {
+              "bytes": 6463,
+              "sha256": "72819f47405ed5ef6a5ec47561a3a7ce9b7f3dcbb29a26186809669d9cd1c851"
+            },
+            "report.json": {
+              "bytes": 170,
+              "sha256": "9161447ff0ea40724ade0b35d7437c06ca65e519ca9eb7b7f7d109379969d185"
+            }
+          }
+        },
+        {
+          "angle_deg": 8,
+          "report": {
+            "n": 1.491,
+            "rays": 240000,
+            "hit": 118760,
+            "tir": 0,
+            "miss": 108355,
+            "side": 12885,
+            "rejected": 0,
+            "peak": 4.0609070080383e-05,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.012492750546954
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 73728,
+              "sha256": "37989e61abe3e7613895c1a21af4cfdea43449a8c2125eb9d18a445cf48bac35"
+            },
+            "1.png": {
+              "bytes": 6373,
+              "sha256": "1a72a333dcbd260b625402efefa545f4c01396c490322c227a9fd3f242dad44b"
+            },
+            "report.json": {
+              "bytes": 170,
+              "sha256": "e02d34b62918e273fcc38efab8d31d1b6a6c318677614a3fe7770ed1bb339de4"
+            }
+          }
+        }
+      ]
+    },
+    "area_source": {
+      "settings": "40.0 8.0 1.491 16000 1 -1.469576158976824e-14 1.469576158976824e-14 -240.0 1.0 0.0 0.0 0.0 1.0 0.0 8.0 7.0 1 7.654042494670958e-15 -7.654042494670958e-15 125.0 1.0 0.0 0.0 -0.0 -1.0 -0.0 50.0 50.0 48 48",
+      "resolution": 48,
+      "rays": 16000,
+      "material": {
+        "name": "PLEXIGLAS GS / XT",
+        "density": 1.19,
+        "default": "589.3",
+        "indices": {
+          "589.3": 1.491
+        },
+        "source": "https://www.plexiglas.de/files/plexiglas-content/pdf/technische-informationen/211-1-PLEXIGLAS-GS-XT-EN.pdf"
+      },
+      "line": "589.3",
+      "profile": null,
+      "design_report": null,
+      "checks": [
+        {
+          "angle_deg": 0,
+          "report": {
+            "n": 1.491,
+            "rays": 16000,
+            "hit": 10956,
+            "tir": 0,
+            "miss": 4352,
+            "side": 692,
+            "rejected": 0,
+            "peak": 0.001145748981296,
+            "screens": [
+              {
+                "image": "1.png",
+                "flux": 0.97763475134296
+              }
+            ]
+          },
+          "files": {
+            "1.f64": {
+              "bytes": 18432,
+              "sha256": "13d0640a8403aefa29bddad76f20f4d5a87cb07280405143a62350289cf08e75"
+            },
+            "1.png": {
+              "bytes": 2312,
+              "sha256": "d3f7451309b6d3186bde17500f49a2f7490eeb1775ad8a62a1945eaa12fcf158"
+            },
+            "report.json": {
+              "bytes": 161,
+              "sha256": "716aa56cc8bd5d83893be4128fba25cf4d1d5a1790e61a29ba637bd7cab6e806"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
