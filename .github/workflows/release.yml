@@ -26,10 +26,13 @@ jobs:
           $ErrorActionPreference='Stop'
           $sdk="$env:RUNNER_TEMP/raysculpt-sdk"
           $env:MAMBA_ROOT_PREFIX="$env:RUNNER_TEMP/raysculpt-mamba"
-          Invoke-WebRequest 'https://micro.mamba.pm/api/micromamba/win-64/2.10.0' -OutFile "$env:RUNNER_TEMP/mamba.tar.bz2"
-          if((Get-FileHash "$env:RUNNER_TEMP/mamba.tar.bz2").Hash -ne '6283F25F8142606D86E81A43C7103B5D4F1D5C2027E3F9D7326EFF23B33930D8'){throw 'micromamba checksum mismatch'}
-          tar -xjf "$env:RUNNER_TEMP/mamba.tar.bz2" -C "$env:RUNNER_TEMP" Library/bin/micromamba.exe
-          & "$env:RUNNER_TEMP/Library/bin/micromamba.exe" create -y -p $sdk --file ./tools/windows-sdk.lock
+          $mamba="$env:RUNNER_TEMP/micromamba.exe"
+          Write-Host 'Downloading verified Windows micromamba executable from GitHub'
+          curl.exe --fail --location --retry 2 --connect-timeout 15 --max-time 90 --output $mamba 'https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-win-64.exe'
+          if($LASTEXITCODE){throw "micromamba download failed ($LASTEXITCODE)"}
+          if((Get-FileHash $mamba).Hash -ne 'F8B4284BD4EB1134122EAF93B3EA6C7BE567E596DE5829E1A6F478E34E41974A'){throw 'micromamba checksum mismatch'}
+          Write-Host 'Installing the exact Windows SDK'
+          & $mamba create -y -p $sdk --file ./tools/windows-sdk.lock
           if($LASTEXITCODE){exit $LASTEXITCODE}
           rustup default stable-x86_64-pc-windows-msvc
           if($LASTEXITCODE){exit $LASTEXITCODE}
