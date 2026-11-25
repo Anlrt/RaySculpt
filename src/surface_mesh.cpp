@@ -70,7 +70,7 @@ Mesh make_height_field_solid(const HeightField& plate, unsigned cell_subdivision
     const std::size_t source_x = plate.samples_x;
     const std::size_t source_y = plate.samples_y;
     if (source_x < 2 || source_y < 2 || cell_subdivisions == 0 ||
-        source_x - 1 > 2047 / cell_subdivisions || source_y - 1 > 2047 / cell_subdivisions ||
+        source_x - 1 > 2048 / cell_subdivisions || source_y - 1 > 2048 / cell_subdivisions ||
         !std::isfinite(plate.width_mm) || plate.width_mm <= 0.0 ||
         !std::isfinite(plate.height_mm) || plate.height_mm <= 0.0 ||
         !std::isfinite(plate.thickness_mm) || plate.thickness_mm <= 0.0 ||

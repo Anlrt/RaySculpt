@@ -2,7 +2,7 @@
 
 Windows desktop CAD for designing transparent shapes that project monochrome
 caustic images onto one or more receiver surfaces. The Russian desktop editor
-uses Qt for Python, Open CASCADE geometry and a native multithreaded C++ tracer.
+uses C++20, Qt Widgets and an OpenGL viewport provided by Open CASCADE. The ray tracer runs in C++ and the photographic transport solver runs in Rust.
 
 ## Лицензия RaySculpt
 
@@ -19,35 +19,9 @@ uses Qt for Python, Open CASCADE geometry and a native multithreaded C++ tracer.
 
 ## Запуск редактора
 
-Готовые сборки Windows x64 доступны в [релизах RaySculpt](https://github.com/Anlrt/RaySculpt/releases).
-Для сборки из релиза установите Python 3.14 x64, распакуйте ZIP в доступную для
-записи папку и откройте **Caustic CAD.cmd**. При первом запуске нужен интернет для
-загрузки библиотек. Исходные файлы и инструменты сборки нужны при разработке.
+Распакуйте весь архив Windows x64 версии **0.3.0-dev** и откройте **RaySculpt.exe**. Библиотеки находятся рядом с программой. Установка Python и подключение к интернету для запуска не требуются. Для проверки выберите **Файл → Открыть** и откройте **mona_lisa.ccad** из того же каталога. В проекте сохранены исходное изображение, оптическая поверхность и материалы.
 
-Откройте [Caustic CAD.cmd](<Caustic CAD.cmd>) в папке проекта. Готовый пример для
-команды **Файл → Открыть** находится в [examples/mona_lisa.ccad](examples/mona_lisa.ccad).
-Проект включает исходное изображение, рассчитанную поверхность и карточки материалов.
-Доступны [вид редактора](docs/cad_window.png), [сравнение цели с проекцией](docs/cad_comparison.png)
-и [сравнение материалов на одной пластине](docs/material_comparison.png).
-Для сравнения выполнено по 4 млн трассировок при n = 1,49, 1,51673 и 1,78446.
-Иллюстрация использует общую экспозицию.
-Для первого запуска из новой копии на Windows x64 нужны Python и Visual Studio 2022
-Build Tools с компонентами C++ и CMake. Проверено с Python 3.14. Откройте Developer
-PowerShell for VS 2022 в корне проекта и выполните команды.
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --only-binary=:all: -r requirements.txt
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-& '.\Caustic CAD.cmd'
-```
-
-Ярлык запуска автоматически выбирает Python из `.venv`. Для примеров командной
-строки ниже добавьте это окружение в начало пути текущей PowerShell-сессии
-командой `$env:Path = "$(Resolve-Path .venv\Scripts);$env:Path"`.
-Личные проекты и результаты расчётов удобно хранить в папке `outputs/`.
-Демонстрационные файлы из `examples/` входят в репозиторий.
+Дорелизные сборки доступны в [заданиях сборки ветки prerelease/0.3.0](https://github.com/Anlrt/RaySculpt/actions/workflows/release.yml?query=branch%3Aprerelease%2F0.3.0). У опубликованной ранее версии 0.2.0 свои инструкции в [релизах](https://github.com/Anlrt/RaySculpt/releases). При работе с исходным кодом соберите редактор по разделу **Build**, затем запустите [Caustic CAD.cmd](<Caustic CAD.cmd>). Пример в исходном дереве находится в [examples/mona_lisa.ccad](examples/mona_lisa.ccad).
 
 - Выберите тело в дереве или мышью. В параметрах справа задаются размеры, положение,
   углы, материал и справочная длина волны. Правой кнопкой вращается вид, средней
@@ -57,11 +31,11 @@ cmake --build build --config Release
   Потяните стрелку для перемещения вдоль мировой оси или само тело для перемещения
   в плоскости вида. Точные координаты вводятся в разделе **Положение**.
   Для связанного объекта меняйте положение опоры или параметры сопряжения.
-- На панели **Выбор** задайте тип элемента. Укажите две вершины, ребра, грани или
+- В меню **Вид** задайте тип элемента. Укажите две вершины, ребра, грани или
   центра и нажмите **Измерить**. Для **Сопряжения** сначала укажите неподвижную
   опору, затем перемещаемый элемент. Смещение измеряется вдоль нормали опоры,
   угол задаётся вокруг её локальной оси X (для ребра это касательная).
-- Меню **Построения** создаёт эскиз на грани или плоскости XY, XZ, YZ,
+- Меню **Модель** создаёт эскиз на грани или плоскости XY, XZ, YZ,
   произвольный плоский срез и булевы операции. Эскиз может содержать отрезки
   и круговые дуги или одну окружность. В дереве раскройте тело и дважды нажмите
   на построение, чтобы изменить размеры. Срезы и булевы операции можно подавлять.
@@ -79,7 +53,7 @@ cmake --build build --config Release
 - Меню **Модель** создаёт тела и выдавливание замкнутого эскиза XY, выполняет срез
   плоскостью XY и задаёт жёсткую связь между объектами. Высота и вершины эскиза
   редактируются. Доступны отмена и возврат изменений.
-- **Модель → Материалы** открывает справочник. Новые карточки сохраняются в профиле
+- **Оптика → Материалы** открывает справочник. Новые карточки сохраняются в профиле
   пользователя. В проект записывается снимок характеристик. Масса рассчитывается по
   объёму и плотности. Каждая трассировка использует один выбранный показатель,
   внешняя среда — воздух с n = 1. Потери Френеля и полное внутреннее отражение
@@ -96,7 +70,7 @@ cmake --build build --config Release
   **Заполнить экран** обрезает края. Третий вариант явно меняет высоту экрана.
   В свойствах экрана можно изменить размещение уже загруженного изображения.
   Для детального синтеза по одной фотографии выберите точечный источник на оси пластины.
-  Для серии видов выберите **Оптика → 3D-цель и углы поворота** и одну модель
+  Для серии видов выберите **Оптика → Виды 3D-объекта** и одну модель
   OBJ, STL, STEP или BREP. Модель цели использует вертикальную ось Y.
   Расчёт использует видимые грани, глубину и освещение. Одна пластина подбирается
   для всех заданных углов. На вкладке проекции доступны также контрольные
@@ -144,16 +118,17 @@ cmake --build build --config Release
 
 ## Build
 
-The C++ core builds with Visual Studio 2022 and CMake on Windows. Model exchange
-uses Python and NumPy. STEP/BREP additionally use the Open CASCADE Python bindings.
+The Windows x64 editor builds with Visual Studio 2022 (MSVC C++ desktop tools and CMake), PowerShell 7 and stable Rust for `x86_64-pc-windows-msvc`. Use a conda-forge SDK with matching x64 Qt, OCCT, OpenCV and libarchive libraries. From the project root in PowerShell:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+micromamba create -y -p ./build/sdk -c conda-forge 'qt6-main=6.12.1' 'occt=8.0.2=novtk*' 'libopencv=5.1.0' 'libarchive=3.8.11'
+./tools/build_native.ps1 -Sdk ./build/sdk/Library
+./tools/package_native.ps1 -Sdk ./build/sdk/Library
+./tests/native_runtime.ps1 -Package ./build/native/portable
+./tools/archive_native.ps1 -Package ./build/native/portable
 ```
 
-The `cmake` bundled with Visual Studio can be used if it is not on `PATH`.
+Keep the package cache until packaging finishes so upstream notices can be included. The build script runs the CMake tests. Packaging uses a new destination directory. For the C++ numerical core alone, configure CMake with `-DRAYSCULPT_NATIVE_DESKTOP=OFF`. The command examples below run from the extracted Windows package.
 
 ## Save a model
 
@@ -162,9 +137,9 @@ project directory, the following commands use an existing design directory
 called `painting-result` and create new output paths.
 
 ```powershell
-build\Release\caustic_cli.exe export-plate painting-result --out painting.step
-build\Release\caustic_cli.exe export-plate painting-result --out models --formats step,brep,3mf,obj,stl
-python tools/design_photo.py painting.jpg --out new-design --formats step,3mf
+.\caustic_cli.exe export-plate painting-result --out painting.step
+.\caustic_cli.exe export-plate painting-result --out models --formats step,brep,3mf,obj,stl
+.\caustic_cli.exe design-photo painting.jpg --out new-design --formats step,3mf
 ```
 
 `design-plate` also accepts `--formats`. Earlier commands keep their STL
@@ -178,13 +153,10 @@ uniform mesh with N cells per side. During photographic design,
 `--mesh-layout transport` places mesh vertices according to the optical map.
 3MF explicitly records millimetres. Interpret STL and OBJ coordinates as mm.
 
-The desktop dependencies in `requirements.txt` include the CAD bindings.
-To check a build and verify a model export, use the following commands.
+To check a saved model against its original profile, run:
 
 ```powershell
-ctest --test-dir build -C Release --output-on-failure
-python -m unittest discover -s tests -p "test_*.py"
-python tools/verify_solid.py painting-result painting.step
+.\caustic_cli.exe verify-solid painting-result painting.step
 ```
 
 The verifier reopens the CAD file, checks the solid topology and spline
@@ -195,8 +167,8 @@ to trace the reopened spline with the original scene and linear target image.
 ## Generate target images from a 3D mesh
 
 ```powershell
-build\Release\caustic_cli.exe render-target --obj model.obj --out target.pgm --angle 30
-build\Release\caustic_cli.exe render-turntable --obj model.obj --out views --views 12
+.\caustic_cli.exe render-target --obj model.obj --out target.pgm --angle 30
+.\caustic_cli.exe render-turntable --obj model.obj --out views --views 12
 ```
 
 `--cube MM` or `--sphere MM` can replace `--obj`. Image dimensions use `--width`
@@ -207,8 +179,8 @@ Images are binary PGM (`P5`), which preserves the exact 8-bit target values.
 ## Design a plate from target images
 
 ```powershell
-build\Release\caustic_cli.exe design-plate --target arrow.png --out arrow_result
-build\Release\caustic_cli.exe design-plate --frame 0 first.png --frame 12 second.png --out turn_result
+.\caustic_cli.exe design-plate --target arrow.png --out arrow_result
+.\caustic_cli.exe design-plate --frame 0 first.png --frame 12 second.png --out turn_result
 ```
 
 Use PNG, JPEG, BMP or binary PGM. Color files use sRGB luminance, with
@@ -247,13 +219,12 @@ Choose tighter values if the manufacturing workflow requires them.
 For one centred point source, one perpendicular screen and a flat entrance,
 the photograph solver builds an inverse transport map, fits a continuous exit
 surface to the refracted directions, and measures the result on fresh rays.
-It preserves the whole picture and its aspect ratio. Set up Python with NumPy,
-OpenCV and Pillow, then run the following commands from the project directory.
+It preserves the whole picture and its aspect ratio. Run these commands from the portable package directory.
 
 ```powershell
-python tools/design_photo.py painting.jpg --out painting-result --grid 682 --map-size 768 --resolution 560 --cells 2047 --rays 64000000
-python tools/verify_photo_stl.py painting-result --side 6000
-python tools/verify_photo_stl.py painting-result --side 6000 --source-size 0.5
+.\caustic_cli.exe design-photo painting.jpg --out painting-result --grid 682 --map-size 768 --resolution 560 --cells 2047 --rays 64000000
+.\caustic_cli.exe verify-stl painting-result --side 6000
+.\caustic_cli.exe verify-stl painting-result --side 6000 --source-size 0.5
 ```
 
 All distances are in mm. Defaults are a 40 mm square plate, 8 mm nominal
@@ -277,7 +248,7 @@ with a 682-node grid produces about 420 MB of binary STL per plate.
 ### Sinusoidal example
 
 ```powershell
-build\Release\caustic_trace_demo.exe demo_caustic.pgm
+.\caustic_trace_demo.exe demo_caustic.pgm
 ```
 
 This traces 5 million rays through a 40 mm sinusoidal plate onto one screen and

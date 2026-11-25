@@ -1,6 +1,16 @@
 #include "geometry.hpp"
 #include "plate_design.hpp"
 #include "photo_trace.hpp"
+#ifdef RAYSCULPT_NATIVE_EXPORT
+#include "desktop/geometry.hpp"
+#include "desktop/jobs.hpp"
+#include "desktop/verify.hpp"
+#include <QCoreApplication>
+#include <QDir>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QJsonDocument>
+#endif
 #include "target_renderer.hpp"
 
 #include <cmath>
@@ -81,51 +91,74 @@ void run_design_command(int argc, ArgChar** argv) {
     caustic::design_plate(settings);
 }
 
-int export_command(int argc, ArgChar** argv, bool design) {
-    const auto bin = std::filesystem::absolute(argv[0]).parent_path();
-    auto script = bin / "tools" / "export_plate.py";
-    if (!std::filesystem::is_regular_file(script))
-        script = bin.parent_path().parent_path() / "tools" / "export_plate.py";
-    if (!std::filesystem::is_regular_file(script))
-        script = std::filesystem::path(CAUSTIC_TOOLS_DIR) / "export_plate.py";
-#ifdef _WIN32
-    std::vector<ArgString> args{L"python",script.wstring()};
-#else
-    std::vector<ArgString> args{"python3",script.string()};
-#endif
-    if (design) {
-        const std::string mode = "_design";
-        args.emplace_back(mode.begin(),mode.end());
-        args.emplace_back(argv[0]);
+int export_command(int argc, ArgChar **argv, bool design) {
+#ifdef RAYSCULPT_NATIVE_EXPORT
+    QStringList args;
+    for (int i = 2; i < argc; ++i)
+        args << QString::fromStdWString(argv[i]);
+    if (!design) {
+        raysculpt::exportPlate(args);
+        return 0;
     }
-    for (int i=2; i<argc; ++i) args.emplace_back(argv[i]);
-#ifdef _WIN32
-    // The CRT joins argv into a Windows command line. Preserve literals
-    // including embedded quotes and trailing backslashes without a shell.
-    for (auto& arg : args) {
-        std::wstring quoted = L"\"";
-        std::size_t slashes = 0;
-        for (wchar_t ch : arg) {
-            if (ch==L'\\') { ++slashes; continue; }
-            quoted.append(ch==L'"' ? 2*slashes+1 : slashes,L'\\');
-            quoted.push_back(ch);
-            slashes=0;
-        }
-        quoted.append(2*slashes,L'\\');
-        arg = quoted+L"\"";
+    QString out;
+    QStringList formats;
+    std::vector<ArgString> command{argv[0], argv[1]};
+    for (int i = 0; i < args.size(); ++i) {
+        if (args[i] == "--out" || args[i] == "--formats") {
+            auto key = args[i];
+            if (++i == args.size())
+                throw std::invalid_argument("missing option value");
+            if (key == "--out")
+                out = args[i];
+            else
+                formats = args[i].toLower().split(',');
+        } else
+            command.push_back(args[i].toStdWString());
     }
-    std::vector<const wchar_t*> pointers;
-    for (const auto& arg : args) pointers.push_back(arg.c_str());
-    pointers.push_back(nullptr);
-    const auto status = _wspawnvp(_P_WAIT,L"python",pointers.data());
-    if (status!=-1) return static_cast<int>(status);
+    if (out.isEmpty() || QFileInfo::exists(out) || formats.empty())
+        throw std::invalid_argument("expected new output directory and formats");
+    formats.removeDuplicates();
+    for (auto &f : formats) {
+        if (f == "stp")
+            f = "step";
+        if (!QStringList{"step", "brep", "stl", "3mf", "obj"}.contains(f))
+            throw std::invalid_argument("unsupported CAD format");
+    }
+    auto parent = QFileInfo(out).absoluteDir();
+    if (!parent.mkpath("."))
+        throw std::runtime_error("cannot create output directory");
+    QTemporaryDir work(parent.filePath(".design-XXXXXX"));
+    if (!work.isValid())
+        throw std::runtime_error("cannot stage design");
+    auto folder = work.filePath("result");
+    auto needMesh = formats.contains("stl") || formats.contains("obj") || formats.contains("3mf");
+    command.insert(command.end(), {L"--out", folder.toStdWString(), L"--write-stl", needMesh ? L"1" : L"0"});
+    std::vector<ArgChar *> pointers;
+    for (auto &arg : command)
+        pointers.push_back(arg.data());
+    run_design_command(int(pointers.size()), pointers.data());
+    raysculpt::writeModels(folder, folder, formats, 0);
+    if (!formats.contains("stl"))
+        QFile::remove(QDir(folder).filePath("plate.stl"));
+    QFile report(QDir(folder).filePath("report.json"));
+    if (!report.open(QIODevice::ReadOnly))
+        throw std::runtime_error("missing design report");
+    auto meta = QJsonDocument::fromJson(report.readAll()).object();
+    report.close();
+    QJsonArray files;
+    for (auto f : formats)
+        files.append("plate." + f);
+    meta["model_files"] = files;
+    if (!report.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        report.write(QJsonDocument(meta).toJson()) < 0)
+        throw std::runtime_error("cannot save design report");
+    report.close();
+    if (!QDir().rename(folder, QFileInfo(out).absoluteFilePath()))
+        throw std::runtime_error("cannot publish completed design");
+    return 0;
 #else
-    std::vector<char*> pointers;
-    for (auto& arg : args) pointers.push_back(arg.data());
-    pointers.push_back(nullptr);
-    execvp(pointers[0],pointers.data());
+    throw std::runtime_error("Model export requires a build with RAYSCULPT_NATIVE_DESKTOP=ON");
 #endif
-    throw std::runtime_error("cannot launch Python for model export");
 }
 
 void save_pgm(const std::filesystem::path& path, const caustic::GrayImage& image) {
@@ -154,21 +187,50 @@ void print_usage() {
         << "      [--grid N] [--resolution PX] [--rays N] [--evals N] [--seconds N] [--threads N]\n"
         << "      [--stl-height-mm MM] [--stl-normal-deg DEG] [--formats step,brep,stl,3mf,obj]\n"
         << "  caustic_cli export-plate DESIGN --out FILE_OR_NEW_DIR [--formats step,brep,stl,3mf,obj] [--cells N]\n"
+        << "  caustic_cli verify-solid DESIGN MODEL [--target TARGET.pgm --out NEW_DIR --rays N]\n"
+        << "  caustic_cli verify-stl PHOTO_DIR [--side N] [--source-size MM]\n"
+        << "  caustic_cli trace-facets PHOTO_DIR [--strata N] [--source-size MM]\n"
         << "  caustic_cli trace-photo PROFILE TARGET.pgm NEW_DIR RAYS MAX_MESH_CELLS [SEED]\n"
         << "  caustic_cli trace-scene SETTINGS PROFILE_OR_DASH NEW_DIR [ANGLE]\n"
         << "  caustic_cli fit-scene INPUT_DIR NEW_DIR\n"
-        << "  Photo design: python tools/design_photo.py IMAGE --out NEW_DIR\n";
+        << "  caustic_cli design-photo IMAGE --out NEW_DIR [--formats step,brep,stl,3mf,obj]\n";
 }
 
 } // namespace
 
 int CAUSTIC_ENTRY(int argc, ArgChar** argv) {
+#ifdef RAYSCULPT_NATIVE_EXPORT
+    int qtArgc = 1;
+    char binary[] = "caustic_cli";
+    char *qtArgv[] = {binary, nullptr};
+    QCoreApplication qt(qtArgc, qtArgv);
+#endif
     try {
         if (argc < 2) {
             print_usage();
             return 2;
         }
         const ArgString command = argv[1];
+#ifdef RAYSCULPT_NATIVE_EXPORT
+        if (is_option(command, "verify-solid") || is_option(command, "verify-stl") ||
+            is_option(command, "trace-facets")) {
+            QStringList args;
+            for (int i = 2; i < argc; ++i)
+                args << QString::fromStdWString(argv[i]);
+            auto report = is_option(command, "verify-solid")
+                              ? raysculpt::verifySolid(args)
+                              : raysculpt::verifyFacets(args, is_option(command, "trace-facets"));
+            std::cout << QJsonDocument(report).toJson().toStdString();
+            return 0;
+        }
+        if (is_option(command, "design-photo")) {
+            QStringList arguments;
+            for (int i = 2; i < argc; ++i)
+                arguments << QString::fromStdWString(argv[i]);
+            raysculpt::designPhotograph(arguments);
+            return 0;
+        }
+#endif
         if (is_option(command, "trace-scene")) {
             if (argc != 5 && argc !=6) throw std::invalid_argument("trace-scene needs settings, profile or -, output and optional angle");
             caustic::trace_scene(as_path(argv[2]), as_path(argv[3]), as_path(argv[4]),argc==6 ? as_double(argv[5]) : 0.);
@@ -271,7 +333,11 @@ int CAUSTIC_ENTRY(int argc, ArgChar** argv) {
             std::cout << "wrote monochrome target image\n";
         }
         return 0;
-    } catch (const std::exception& error) {
+    }
+#ifdef RAYSCULPT_NATIVE_EXPORT
+    catch (const Standard_Failure &error) {std::cerr<<error.GetMessageString()<<'\n';return 1;}
+#endif
+    catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
         return 1;
     }

@@ -5,8 +5,7 @@ RaySculpt's original software is offered under the
 Third-party components and artwork retain their respective terms.
 
 The prototype uses the C++ standard library and the [Windows Imaging Component](https://learn.microsoft.com/en-us/windows/win32/wic/-wic-creating-decoder)
-provided by Windows. No third-party source code has been copied into the
-repository.
+provided by Windows. The native desktop dependencies and contributed code are listed below.
 
 Research references that informed the design:
 
@@ -17,26 +16,9 @@ Research references that informed the design:
 - Budianto Tandianus et al., [Caustic Object Construction Based on Multiple Caustic Patterns](https://dspace.zcu.cz/items/1d6f2b70-c0aa-4be7-8159-46eaa4306bf9/full), 2012.
 - Christoph Bösel and Herbert Gross, [Single freeform surface design for prescribed input wavefront and target irradiance](https://arxiv.org/abs/1705.04540), 2017. This is background for ray mapping and normal integration. The numerical implementation here is independent.
 
-The optional photographic workflow imports [NumPy](https://numpy.org/),
-[OpenCV](https://opencv.org/) and [Pillow](https://python-pillow.org/).
-NumPy uses the BSD-3-Clause license, OpenCV 4.5 and later uses Apache-2.0,
-and Pillow 12.0.0 specifies [MIT-CMU](https://github.com/python-pillow/Pillow/blob/12.0.0/pyproject.toml).
-These libraries are installed separately.
-The full-frame verification used NumPy 2.3.4, OpenCV 4.10.0 and Pillow 12.0.0.
+The Windows package uses the shared libraries in the conda-forge builds of [Qt 6.12.1](https://www.qt.io/licensing/), [Open CASCADE Technology 8.0.2](https://dev.opencascade.org/resources/licensing), [OpenCV 5.1.0](https://opencv.org/license/) and [libarchive 3.8.11](https://github.com/libarchive/libarchive). The 3MF writer follows the [3MF Core Specification](https://github.com/3MFConsortium/spec_core).
 
-Smooth solid exchange uses [cadquery-ocp-novtk](https://pypi.org/project/cadquery-ocp-novtk/)
-and cadquery-ocp-proxy version 8.0.1.1.0 (Python bindings, Apache-2.0).
-They provide [Open CASCADE Technology](https://dev.opencascade.org/resources/licensing)
-under its LGPL-2.1 license with the OCCT exception. The dependency is installed
-separately in the build directory. The mesh package writer follows the
-[3MF Core Specification](https://github.com/3MFConsortium/spec_core).
-
-If a library or code fragment is added later, record its exact version, source,
-license, and any required notices here before committing it.
-
-The desktop editor uses [Qt for Python / PySide6 Essentials](https://pypi.org/project/PySide6-Essentials/6.12.0/)
-and Shiboken6 6.12.0. The locally installed wheels include the Qt/PySide notices
-and license texts. The interface uses Qt Fusion, Qt standard actions and system fonts.
+The package's `licenses/` directory identifies each redistributed dependency by version and build and includes the license files supplied by its upstream package, plus the Rust toolchain notices. The editor uses Qt Widgets, Qt Fusion and system fonts. The previous 0.2.0 implementation used PySide6, Shiboken6, NumPy, Pillow and CadQuery OCP bindings. The version-specific notices are retained in the 0.2.0 source history.
 
 Material properties in the local catalog are taken from the manufacturers.
 
@@ -55,10 +37,18 @@ Mesh picking uses an independently written vectorized implementation of the
 ray–triangle intersection described by Tomas Möller and Ben Trumbore (1997).
 [Fast, Minimum Storage Ray–Triangle Intersection](https://doi.org/10.1080/10867651.1997.10487468).
 
-Subshape selection, BREP validity, distance queries and Boolean operations use
-the installed Open CASCADE bindings listed above. The Windows package contains
-the project code, the compiled project engine and the examples. The launcher
-obtains the dependencies as wheels, including their upstream notices, using pip.
+The current editor uses Open CASCADE directly for subshape selection, BREP validity, distance queries and Boolean operations.
+
+## Native desktop migration
+
+Yorodoshi contributed the Rust transport kernels and the OpenCV spectral callback
+on branch A01. The C++ optical spline construction and CAD body builder are also
+adapted from that contribution. Original source and authorship are preserved in
+[RaySculpt commit f3db583](https://github.com/Anlrt/RaySculpt/commit/f3db583347ac02badcc0bdb00b3e14f4d0e39054).
+
+The native editor links Qt Widgets, Open CASCADE Technology, OpenCV and libarchive.
+The Rust standard library is linked into the executable. Source dependencies and
+runtime redistributions retain their respective upstream notices.
 
 ## Third-party patent references
 
