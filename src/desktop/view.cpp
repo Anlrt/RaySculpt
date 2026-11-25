@@ -57,6 +57,14 @@ View::~View() {
     if (!camera.IsNull())
         camera->Remove();
 }
+void View::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    if (camera.IsNull() && !current.isEmpty()) {
+        sync(current, folder);
+        select(selected);
+        fit();
+    }
+}
 void View::paintEvent(QPaintEvent *) {
     if (!camera.IsNull())
         camera->Redraw();
@@ -137,9 +145,11 @@ void View::select(const QString &id) {
     redrawManipulator();
 }
 void View::sync(const QJsonObject &scene, const QString &assets) {
-    initialize();
     current = scene;
     folder = assets;
+    if (camera.IsNull() && !isVisible())
+        return;
+    initialize();
     auto used = consumed(scene);
     QSet<QString> kept;
     for (auto v : scene["objects"].toArray()) {

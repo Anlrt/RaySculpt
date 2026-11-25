@@ -13,6 +13,7 @@ bool solid(const QString &kind);
 QString label(const QString &kind);
 QJsonObject newBody(const QString &kind);
 QJsonObject newDocument();
+void arrangeScreens(QJsonObject &scene);
 void validateDocument(const QJsonObject &);
 void storeMaterial(const QString &key, const QJsonObject &card);
 QJsonObject object(const QJsonObject &scene, const QString &id);

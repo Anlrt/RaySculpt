@@ -188,6 +188,41 @@ void moveBody(QJsonObject &s, const QString &id, const gp_Trsf &t) {
         put(s, child);
     }
 }
+void arrangeScreens(QJsonObject &scene) {
+    QJsonObject plate;
+    QList<QJsonObject> screens;
+    double width = 0;
+    for (auto v : scene["objects"].toArray()) {
+        auto obj = v.toObject();
+        if (obj["kind"] == "plate" && !obj["reference"].toBool()) {
+            if (!plate.isEmpty())
+                fail("Выберите сцену с одной оптической пластиной");
+            plate = obj;
+        }
+        if (obj["kind"] == "screen") {
+            if (obj.contains("parent") || obj["locked"].toBool())
+                fail("Для расстановки снимите фиксацию или связь экрана «" + obj["name"].toString() + "»");
+            width += obj["dims"].toObject()["w"].toDouble();
+            screens << obj;
+        }
+    }
+    if (plate.isEmpty() || screens.size() < 2)
+        fail("Добавьте оптическую пластину и два экрана");
+    const double gap = 1.;
+    double z = (pose(plate).Inverted() * pose(screens.front())).Value(3, 4);
+    if (z <= plate["dims"].toObject()["h"].toDouble() + plate["max_relief"].toDouble())
+        fail("Первый экран должен находиться за пластиной");
+    double edge = -(width + (screens.size() - 1) * gap) * .5;
+    auto next = scene;
+    for (const auto &screen : screens) {
+        const double w = screen["dims"].toObject()["w"].toDouble();
+        gp_Trsf t;
+        t.SetTranslation(gp_Vec(edge + w / 2, 0, z));
+        moveBody(next, screen["id"].toString(), pose(plate) * t);
+        edge += w + gap;
+    }
+    scene = next;
+}
 QJsonObject resolved(const QJsonObject &s, const QJsonObject &obj, QSet<QString> visiting) {
     auto key = obj["id"].toString();
     if (visiting.contains(key))

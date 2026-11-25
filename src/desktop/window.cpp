@@ -4,6 +4,7 @@
 #include <QtWidgets>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
+#include <gp_Quaternion.hxx>
 #include <QElapsedTimer>
 #include <algorithm>
 
@@ -12,11 +13,13 @@ Window::Window() : scene(newDocument()), saved(scene) {
     resize(1380, 850);
     tabs = new QTabWidget(this);
     view = new View(tabs);
+    view->setObjectName("cadViewport");
     tabs->addTab(view, "Модель");
     setCentralWidget(tabs);
     auto page = new QWidget;
     auto panel = new QVBoxLayout(page);
     results = new QComboBox;
+    results->setObjectName("projectionScreens");
     panel->addWidget(results);
     auto columns = new QHBoxLayout;
     panel->addLayout(columns, 1);
@@ -67,6 +70,7 @@ Window::Window() : scene(newDocument()), saved(scene) {
         return d;
     };
     tree = new QTreeWidget;
+    tree->setObjectName("modelTree");
     tree->setHeaderHidden(true);
     dock("Дерево модели", tree, Qt::LeftDockWidgetArea);
     auto area = new QScrollArea;
@@ -172,7 +176,7 @@ Window::Window() : scene(newDocument()), saved(scene) {
             refresh();
         },
         "redo", "Ctrl+Y", quick);
-    action(
+    deleteAction = action(
         edit, "Удалить выбранный объект",
         [this] {
             auto s = scene;
@@ -189,6 +193,9 @@ Window::Window() : scene(newDocument()), saved(scene) {
                 } else if (step == "mate") {
                     target.remove("parent");
                     target.remove("constraint");
+                } else if (step == "profile") {
+                    for (auto key : {"profile", "design_n", "min_relief", "max_relief"})
+                        target.remove(key);
                 } else if (step == "cut")
                     target.remove("cut");
                 else
@@ -197,19 +204,38 @@ Window::Window() : scene(newDocument()), saved(scene) {
                 commit(s);
                 return;
             }
-            if (target["locked"].toBool())
-                fail("Сначала снимите фиксацию объекта");
+
             auto a = s["objects"].toArray();
+            QStringList owners;
             for (int i = 0; i < a.size(); ++i) {
                 auto o = a[i].toObject();
-                for (auto op : o["operations"].toArray())
-                    if (op.toObject()["tool"] == selected)
-                        fail("Тело используется в операции");
-                if (o["parent"] == selected) {
+                auto ops = o.value("operations").toArray();
+                for (int j = ops.size() - 1; j >= 0; --j) {
+                    if (ops.at(j).toObject()["tool"] == selected) {
+                        ops.removeAt(j);
+                        owners << o["name"].toString();
+                    }
+                }
+                if (o.contains("operations"))
+                    o["operations"] = ops;
+                a[i] = o;
+                if (o.value("parent") == selected) {
                     o.remove("parent");
                     o.remove("constraint");
                     a[i] = o;
                 }
+            }
+            if (!owners.isEmpty() || target["locked"].toBool()) {
+                owners.removeDuplicates();
+                auto question = QString("Удалить %1«%2»")
+                                    .arg(target["locked"].toBool() ? "закреплённый объект " : "",
+                                         target["name"].toString());
+                if (!owners.isEmpty())
+                    question += " и зависящие от него булевы операции в «" + owners.join("», «") + "»";
+                if (QMessageBox::question(this, "Удаление объекта", question + "?",
+                                          QMessageBox::Yes | QMessageBox::Cancel,
+                                          QMessageBox::Cancel) != QMessageBox::Yes)
+                    return;
             }
             for (int i = 0; i < a.size(); ++i)
                 if (a[i].toObject()["id"] == selected) {
@@ -217,11 +243,40 @@ Window::Window() : scene(newDocument()), saved(scene) {
                     break;
                 }
             s["objects"] = a;
-            if (s["turntable"].toObject()["screen"] == selected)
+            if (s.value("turntable").toObject().value("screen") == selected)
                 s.remove("turntable");
             commit(s);
         },
         {}, "Delete");
+    tree->installEventFilter(this);
+    tree->addAction(deleteAction);
+    tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tree, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &point) {
+        auto row = tree->itemAt(point);
+        if (!row)
+            return;
+        tree->setCurrentItem(row);
+        QMenu menu(tree);
+        auto body = object(scene, selected);
+        if (body["kind"] == "screen" && !scene.contains("turntable"))
+            menu.addAction("Назначить изображение…", this, [this] { guard([this] { chooseImage(); }); });
+        if (body["locked"].toBool())
+            menu.addAction("Снять фиксацию", this, [this] {
+                guard([this] {
+                    auto s = scene;
+                    auto o = object(s, selected);
+                    o["locked"] = false;
+                    put(s, o);
+                    commit(s);
+                });
+            });
+        auto remove = menu.addAction(row->data(0, Qt::UserRole + 1).toString().isEmpty()
+                                         ? "Удалить объект «" + row->text(0) + "»"
+                                         : "Удалить построение «" + row->text(0) + "»");
+        remove->setEnabled(row->data(0, Qt::UserRole + 1).toString() != "sketch");
+        connect(remove, &QAction::triggered, deleteAction, &QAction::trigger);
+        menu.exec(tree->viewport()->mapToGlobal(point));
+    });
     for (auto k : {"plate", "box", "sphere", "cylinder", "screen", "point", "area", "sun"})
         action(model, label(k), [this, k] { add(k); });
     action(model, "Срез параллельно XY…", [this] {
@@ -305,6 +360,16 @@ Window::Window() : scene(newDocument()), saved(scene) {
     sources->setMenu(lights);
     optical->addWidget(sources);
     action(optic, "Добавить экран", [this] { add("screen"); }, "screen", {}, optical);
+    action(
+        optic, "Разместить экраны рядом",
+        [this] {
+            auto next = scene;
+            arrangeScreens(next);
+            commit(next);
+            tabs->setCurrentIndex(0);
+            view->fit();
+        },
+        "placement");
     action(optic, "Назначить изображение…", [this] { chooseImage(); }, "target", {}, optical);
     action(optic, "Виды 3D-объекта…", [this] { turntable(); });
     action(optic, "Убрать 3D-цель", [this] {
@@ -502,21 +567,37 @@ void Window::commit(QJsonObject next) {
 void Window::select(const QString &id) {
     selected = id;
     QSignalBlocker b(tree);
-    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-        auto row = tree->topLevelItem(i);
-        if (row->data(0, Qt::UserRole) == id &&
-            (!tree->currentItem() || tree->currentItem()->data(0, Qt::UserRole) != id))
-            tree->setCurrentItem(row);
+    if (!tree->currentItem() || tree->currentItem()->data(0, Qt::UserRole) != id) {
+        for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+            auto row = *it;
+            if (row->data(0, Qt::UserRole) == id && !row->data(0, Qt::UserRole + 1).isValid()) {
+                tree->setCurrentItem(row);
+                tree->scrollToItem(row);
+                break;
+            }
+        }
     }
     view->select(id);
     properties();
 }
 void Window::refresh() {
     QScopedValueRollback block(updating, true);
+    auto identity = [](QTreeWidgetItem *item) {
+        return item ? QStringList{item->data(0, Qt::UserRole).toString(),
+                                  item->data(0, Qt::UserRole + 1).toString(),
+                                  item->data(0, Qt::UserRole + 3).toString()}
+                    : QStringList{};
+    };
+    auto active = identity(tree->currentItem());
+    QSet<QStringList> expanded;
+    for (QTreeWidgetItemIterator it(tree); *it; ++it)
+        if ((*it)->isExpanded())
+            expanded.insert(identity(*it));
     tree->clear();
+    QMap<QString, QTreeWidgetItem *> bodies, toolParents;
     auto items = scene["objects"].toArray();
     if (object(scene, selected).isEmpty())
-        selected = items.at(0).toObject()["id"].toString();
+        selected = items.isEmpty() ? QString{} : items.first().toObject()["id"].toString();
     bool target = true;
     for (auto v : items) {
         auto o = v.toObject();
@@ -528,14 +609,18 @@ void Window::refresh() {
                                                     : "light") +
                               ".svg"));
         row->setData(0, Qt::UserRole, o["id"].toString());
+        bodies.insert(o["id"].toString(), row);
         auto step = [&](QString name, QString field, int index = -1) {
             auto child = new QTreeWidgetItem(row, {name});
             child->setData(0, Qt::UserRole, o["id"].toString());
             child->setData(0, Qt::UserRole + 1, field);
             child->setData(0, Qt::UserRole + 2, index);
+            return child;
         };
         if (k == "prism")
             step("Эскиз", "sketch");
+        if (o.contains("profile"))
+            step("Оптический рельеф", "profile");
         if (o.contains("cut"))
             step("Срез XY", "cut");
         if (o.contains("parent"))
@@ -547,8 +632,12 @@ void Window::refresh() {
                                                       {"subtract", "Вычитание"},
                                                       {"union", "Объединение"},
                                                       {"intersect", "Пересечение"}};
-            step(types.value(op["kind"].toString()) + (op["suppressed"].toBool() ? " (выключена)" : ""),
-                 "operation", seq++);
+            auto opRow =
+                step(types.value(op["kind"].toString()) + (op["suppressed"].toBool() ? " (выключена)" : ""),
+                     "operation", seq++);
+            opRow->setData(0, Qt::UserRole + 3, op["id"].toString());
+            if (op.contains("tool") && !op["suppressed"].toBool())
+                toolParents.insert(op["tool"].toString(), opRow);
         }
 
         if (o["id"] == selected)
@@ -556,6 +645,21 @@ void Window::refresh() {
         if (k == "screen" && !o.contains("image"))
             target = false;
     }
+    for (auto it = toolParents.cbegin(); it != toolParents.cend(); ++it) {
+        auto child = bodies.value(it.key(), nullptr);
+        if (child) {
+            tree->takeTopLevelItem(tree->indexOfTopLevelItem(child));
+            it.value()->addChild(child);
+        }
+    }
+    for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+        if (expanded.contains(identity(*it)))
+            (*it)->setExpanded(true);
+        if (!active.isEmpty() && active.first() == selected && identity(*it) == active)
+            tree->setCurrentItem(*it);
+    }
+    if (!tree->currentItem() && bodies.contains(selected))
+        tree->setCurrentItem(bodies.value(selected));
     bool idle = job.state() == QProcess::NotRunning;
     auto issues = diagnostics(scene);
     bool ready = issues.isEmpty();
@@ -579,8 +683,7 @@ void Window::refresh() {
             auto issue = value.toObject();
             for (const auto id : issue["objects"].toArray()) {
                 view->issueObjects.insert(id.toString());
-                for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-                    auto row = tree->topLevelItem(i);
+                for (auto row : bodies) {
                     if (row->data(0, Qt::UserRole) == id.toString()) {
                         row->setForeground(0, QColor("#b52729"));
                         row->setToolTip(0, issue["message"].toString());
@@ -590,8 +693,7 @@ void Window::refresh() {
         }
     }
     if (!issues.isEmpty()) {
-        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-            auto row = tree->topLevelItem(i);
+        for (auto row : bodies) {
             for (auto message : issues)
                 if (message.contains(row->text(0), Qt::CaseInsensitive)) {
                     view->issueObjects.insert(row->data(0, Qt::UserRole).toString());
@@ -651,11 +753,35 @@ void Window::add(QString k, QString path, bool replaceLight) {
     }
     selected = o["id"].toString();
     put(s, o);
+    if (k == "screen" && count == 1 && !plate.isEmpty()) {
+        for (auto v : scene["objects"].toArray()) {
+            auto first = v.toObject();
+            if (first["kind"] != "screen" || first["locked"].toBool() || first.contains("parent") ||
+                first.contains("image") || plate.contains("profile"))
+                continue;
+            auto t = pose(plate).Inverted() * pose(first);
+            gp_Trsf initial;
+            initial.SetTranslation(gp_Vec(0, 0, 125));
+            auto delta = initial.Inverted() * t;
+            if (delta.TranslationPart().Modulus() < 1e-7 &&
+                std::abs(delta.GetRotation().GetRotationAngle()) < 1e-7 && first["dims"] == o["dims"])
+                arrangeScreens(s);
+        }
+    }
     commit(s);
     tabs->setCurrentIndex(0);
     view->fit();
 }
 bool Window::eventFilter(QObject *obj, QEvent *event) {
+    if (obj == tree && (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress)) {
+        auto key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Delete && key->modifiers() == Qt::NoModifier) {
+            event->accept();
+            if (event->type() == QEvent::KeyPress && !key->isAutoRepeat())
+                deleteAction->trigger();
+            return true;
+        }
+    }
     if (event->type() == QEvent::Wheel || event->type() == QEvent::MouseButtonDblClick) {
         for (auto pane : panes)
             if (pane->viewport() == obj) {

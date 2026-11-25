@@ -26,8 +26,8 @@ int raysculpt_inverse_transport_v1(const double *, size_t, double, double, doubl
                                    Filter);
 int raysculpt_forward_transport_v1(const double *, const double *, size_t, size_t, size_t, double, double,
                                    double, size_t, double *, double *, size_t);
-int raysculpt_optical_profile_v1(const double *, const double *, size_t, double, double, double, double,
-                                 double, double *, Filter);
+int raysculpt_optical_profile_v2(const double *, const double *, const double *, size_t, double, double,
+                                 double, double, double, double *, Filter);
 int raysculpt_calibrate_v1(const double *, const double *, const double *, const double *, size_t, size_t,
                            double, double, double *, double *, Filter);
 int raysculpt_spectral_filter_v1(const double *, const double *, double *, size_t, size_t, double) noexcept;
@@ -271,6 +271,8 @@ static cv::Mat goal(const QString &assets, const QJsonObject &s, int res, double
     return result;
 }
 static void check(int status) {
+    if (status == 2)
+        throw std::domain_error("Не удалось построить оптическое отображение без складок");
     if (status)
         fail(QString("Оптический расчёт отклонил параметры (код %1)").arg(status));
 }
@@ -337,8 +339,90 @@ static caustic::Mesh transportMesh(const caustic::HeightField &h, const std::vec
     }
     return mesh;
 }
+// Map requested irradiance to the XY footprint. The per-pixel depth keeps each
+// assigned ray aimed at its physical receiver, even when the panels tilt.
+struct ReceiverPlane {
+    cv::Mat target;
+    double width, height, distance;
+    cv::Mat depths;
+};
+static std::optional<ReceiverPlane> receiverPlane(const Setup &setup, const QString &assets, int detail) {
+    const auto inv = pose(setup.plate).Inverted();
+    const auto light = inv * pose(setup.lamp);
+    if (setup.lamp["kind"] != "point" || std::hypot(light.Value(1, 4), light.Value(2, 4)) > 1e-6)
+        return {};
+    struct Tile {
+        QJsonObject screen;
+        gp_Trsf tr;
+        double dx, dy, halfW, halfH;
+    };
+    std::vector<Tile> tiles;
+    double halfWidth = 0, halfHeight = 0, density = 0;
+    const double z = (inv * pose(setup.screens.front())).Value(3, 4);
+    for (const auto &screen : setup.screens) {
+        const auto t = inv * pose(screen);
+        const double w = dim(screen, "w") / 2, h = dim(screen, "d") / 2;
+        if (std::abs(t.Value(3, 3)) < .1 ||
+            t.Value(3, 4) - w * std::abs(t.Value(3, 1)) - h * std::abs(t.Value(3, 2)) <=
+                dim(setup.plate, "h"))
+            return {};
+        const double dx = w * std::abs(t.Value(1, 1)) + h * std::abs(t.Value(1, 2));
+        const double dy = w * std::abs(t.Value(2, 1)) + h * std::abs(t.Value(2, 2));
+        halfWidth = std::max(halfWidth, std::abs(t.Value(1, 4)) + dx);
+        halfHeight = std::max(halfHeight, std::abs(t.Value(2, 4)) + dy);
+        density = std::max(density, detail / (2 * std::max(w, h)));
+        tiles.push_back({screen, t, dx, dy, w, h});
+    }
+    density = std::min(density, 768. / std::max(halfWidth, halfHeight));
+    auto pixels = [&](double extent) { return std::max(1, qRound(2 * extent * density)); };
+    ReceiverPlane plane{cv::Mat::zeros(pixels(halfHeight), pixels(halfWidth), CV_64F), 2 * halfWidth,
+                        2 * halfHeight, z};
+    cv::Mat depths(plane.target.size(), CV_64F, cv::Scalar(0));
+    bool varying = false;
+    const double sx = plane.target.cols / plane.width, sy = plane.target.rows / plane.height;
+    for (const auto &[screen, t, dx, dy, w, h] : tiles) {
+        const double cx = t.Value(1, 4), cy = t.Value(2, 4);
+        const int left = std::clamp(int(std::floor((halfWidth + cx - dx) * sx)), 0, plane.target.cols);
+        const int right = std::clamp(int(std::ceil((halfWidth + cx + dx) * sx)), 0, plane.target.cols);
+        const int top = std::clamp(int(std::floor((halfHeight - cy - dy) * sy)), 0, plane.target.rows);
+        const int bottom = std::clamp(int(std::ceil((halfHeight - cy + dy) * sy)), 0, plane.target.rows);
+        if (right - left < 2 || bottom - top < 2)
+            return {};
+        const auto target = goal(assets, screen, detail, 0, nullptr);
+        for (int row = top; row < bottom; ++row)
+            for (int col = left; col < right; ++col) {
+                double x = (col + .5) / sx - halfWidth - cx, y = halfHeight - (row + .5) / sy - cy;
+                const double determinant = t.Value(3, 3);
+                double u = (x * t.Value(2, 2) - y * t.Value(1, 2)) / (determinant * w),
+                       v = (y * t.Value(1, 1) - x * t.Value(2, 1)) / (determinant * h);
+                if (std::abs(u) > 1 || std::abs(v) > 1)
+                    continue;
+                if (depths.at<double>(row, col) > 0)
+                    return {}; // Projected footprints overlap.
+                double localZ = t.Value(3, 4) + u * w * t.Value(3, 1) + v * h * t.Value(3, 2);
+                depths.at<double>(row, col) = localZ;
+                varying |= std::abs(localZ - z) > 1e-6;
+                const double a = std::clamp((u + 1) * .5 * target.cols - .5, 0., double(target.cols - 1));
+                const double b = std::clamp((1 - v) * .5 * target.rows - .5, 0., double(target.rows - 1));
+                const int i = int(a), j = int(b), next = std::min(i + 1, target.cols - 1);
+                const auto first = target.ptr<double>(j),
+                           last = target.ptr<double>(std::min(j + 1, target.rows - 1));
+                plane.target.at<double>(row, col) = std::lerp(std::lerp(first[i], first[next], a - i),
+                                                              std::lerp(last[i], last[next], a - i), b - j) /
+                                                    std::abs(determinant);
+            }
+    }
+    if (varying)
+        plane.depths = depths;
+    double maximum = 0;
+    cv::minMaxLoc(plane.target, nullptr, &maximum);
+    if (maximum > 1)
+        plane.target /= maximum;
+    return plane;
+}
 static void photoDesign(const QString &dir, const cv::Mat &target, const QJsonObject &s, const Setup &a,
-                        double source, double screen, int quality, const QJsonObject &options = {}) {
+                        double source, double screen, int quality, const QJsonObject &options = {},
+                        const cv::Mat &depths = {}) {
     int grid = std::array{96, 320, 512}.at(quality), map = std::array{96, 320, 640}.at(quality),
         rays = std::array{1000000, 8000000, 36000000}.at(quality);
     double aperture = dim(a.plate, "w"), thick = dim(a.plate, "h"), n = indexOf(s, a.plate),
@@ -381,8 +465,19 @@ static void photoDesign(const QString &dir, const cv::Mat &target, const QJsonOb
         check(raysculpt_forward_transport_v1(mx.data(), my.data(), mx.size(), map, grid, aperture, w, h,
                                              grid <= 96 ? 1 : std::clamp(QThread::idealThreadCount(), 1, 12),
                                              tx.data(), ty.data(), tx.size()));
-        check(raysculpt_optical_profile_v1(tx.data(), ty.data(), grid, aperture, thick, n, source, screen,
-                                           coeff.data(), raysculpt_spectral_filter_v1));
+        std::vector<double> tz;
+        if (!depths.empty()) {
+            tz.reserve(tx.size());
+            for (size_t i = 0; i < tx.size(); ++i) {
+                int x = std::clamp(int((tx[i] / w + .5) * depths.cols), 0, depths.cols - 1);
+                int y = std::clamp(int((.5 - ty[i] / h) * depths.rows), 0, depths.rows - 1);
+                double depth = depths.at<double>(y, x);
+                tz.push_back(depth > 0 ? depth : screen);
+            }
+        }
+        check(raysculpt_optical_profile_v2(tx.data(), ty.data(), tz.empty() ? nullptr : tz.data(), grid,
+                                           aperture, thick, n, source, screen, coeff.data(),
+                                           raysculpt_spectral_filter_v1));
         auto file = path(dir, QString("surface-%1.txt").arg(pass));
         std::ofstream out(std::filesystem::path(file.toStdWString()));
         out << std::setprecision(17) << grid << ' ' << aperture << ' ' << thick << ' ' << n << ' ' << source
@@ -398,7 +493,15 @@ static void photoDesign(const QString &dir, const cv::Mat &target, const QJsonOb
                 stop = "relief limit";
                 break;
             }
-            fail("Рельеф превышает доступную толщину");
+            throw std::domain_error("Рельеф превышает доступную толщину");
+        }
+        if (!depths.empty()) {
+            // Calibration on a flat screen would score a different optical setup.
+            // The caller traces this profile onto the real tilted receivers.
+            auto output = path(dir, "result");
+            if (!QDir().mkpath(output) || !QFile::copy(file, path(output, "surface.txt")))
+                fail("Ошибка записи поверхности");
+            return;
         }
         auto cal = path(dir, QString("cal-%1").arg(pass));
         caustic::trace_photo(file.toStdWString(), mapFile.toStdWString(), cal.toStdWString(),
@@ -745,7 +848,7 @@ QJsonObject solve(const QJsonObject &req) {
         mesh = meshFile(assetFile(assets, turn["asset"].toString()));
     bool design = req["task"] == "design";
     std::set<double> angles{0};
-    if (design && mesh) {
+    if (mesh) {
         angles.clear();
         for (auto v : turn["angles"].toArray())
             angles.insert(v.toDouble());
@@ -772,18 +875,42 @@ QJsonObject solve(const QJsonObject &req) {
                                                        {"gain", 1.}}}}};
         }
     }
-    if (design) {
-        if (1024LL * angles.size() * a.screens.size() > 1000000)
+    bool jointPlane = false;
+    QString recommendation;
+    if (design && !mesh && a.screens.size() > 1) {
+        int detail = std::array{96, 256, 448}.at(quality);
+        if (auto plane = receiverPlane(a, assets, detail)) {
+            auto virtualSetup = a;
+            virtualSetup.screens[0]["dims"] = QJsonObject{{"w", plane->width}, {"d", plane->height}};
+            auto folder = path(dir, "coplanar");
+            if (!QDir().mkpath(folder))
+                fail("Не удалось создать каталог совместного расчёта");
+            try {
+                photoDesign(folder, plane->target, scene, virtualSetup,
+                            -(pose(a.plate).Inverted() * pose(a.lamp)).Value(3, 4), plane->distance, quality,
+                            {}, plane->depths);
+                surface = path(folder, "result/surface.txt");
+                res = detail;
+                jointPlane = true;
+            } catch (const std::domain_error &) {
+                // Try a bounded fit if the transport solution would breach the blank.
+            }
+        }
+    }
+    if (design && !jointPlane) {
+        const int designRes = std::array{32, 48, 64}.at(quality);
+        if (qint64(designRes) * designRes * angles.size() * a.screens.size() > 1000000)
             fail("Суммарное разрешение целей превышает бюджет оптимизации");
-        save(cfg, traceSettings(scene, 32, 16000));
-        QByteArray list = "7 " + QByteArray::number(int(angles.size()));
+        const int controls = std::array{7, 9, 11}.at(quality);
+        save(cfg, traceSettings(scene, designRes, std::array{16000, 32000, 64000}.at(quality)));
+        QByteArray list = QByteArray::number(controls) + " " + QByteArray::number(int(angles.size()));
         int j = 0;
         for (auto angle : angles) {
             list += " " + QByteArray::number(angle, 'g', 17);
             int k = 0;
             for (auto s : a.screens) {
                 pgm(path(dir, QString("%1_%2.pgm").arg(j).arg(k++)),
-                    goal(assets, s, 32, angle, mesh ? &*mesh : nullptr));
+                    goal(assets, s, designRes, angle, mesh ? &*mesh : nullptr));
             }
             ++j;
         }
@@ -791,10 +918,11 @@ QJsonObject solve(const QJsonObject &req) {
         caustic::fit_scene(dir.toStdWString(), result.toStdWString());
         auto fit = json(path(result, "fit.json"));
         if (!(fit["final"].toDouble() < fit["initial"].toDouble()))
-            fail("Подбор не улучшил плоскую заготовку");
+            recommendation = "За отведённое число проб улучшить плоскую заготовку не удалось. Проверьте "
+                             "ошибки яркости экранов и их положение.";
         surface = path(result, "surface.txt");
-        res = 96;
-        rays = 240000;
+        res = std::array{96, 256, 448}.at(quality);
+        rays = std::max(rays, std::array{240000, 2000000, 8000000}.at(quality));
     }
     auto checkAngles = angles;
     if (angles.size() > 1)
@@ -811,7 +939,8 @@ QJsonObject solve(const QJsonObject &req) {
         int k = 0;
         for (auto s : a.screens) {
             auto r = report["screens"].toArray().at(k).toObject();
-            QJsonObject row{{"name", s["name"]},
+            QJsonObject row{{"screen_id", s["id"]},
+                            {"name", s["name"]},
                             {"angle", angle},
                             {"intermediate", !angles.contains(angle)},
                             {"image", path(out, r["image"].toString())},
@@ -840,21 +969,30 @@ QJsonObject solve(const QJsonObject &req) {
     }
     if (design) {
         double gain = totalEnergy > 0 ? totalDot / totalEnergy : 0;
-        bool reached = false;
+        QStringList dark;
         for (int i = 0; i < entries.size(); ++i) {
             auto row = entries.at(i).toObject();
             row["gain"] = gain * row["peak"].toDouble();
-            reached |= row["flux"].toDouble() > 0;
+            if (!row["intermediate"].toBool() && row["target_energy"].toDouble() > 0 &&
+                row["flux"].toDouble() <= 0)
+                dark << row["name"].toString();
             double targetEnergy = row.take("target_energy").toDouble();
             row["error"] = std::sqrt(std::max(0., gain * gain * row.take("energy").toDouble() -
                                                       2 * gain * row.take("dot").toDouble() + targetEnergy) /
                                      std::max(1e-16, targetEnergy));
             entries[i] = row;
         }
-        if (!reached)
-            fail("Лучи не достигли экранов");
+        dark.removeDuplicates();
+        if (!dark.isEmpty())
+            fail("Лучи не достигли экрана: " + dark.join(", ") +
+                 ". Приблизьте его к освещённой области или разместите экраны рядом.");
     }
     QJsonObject answer{{"screens", entries}};
+    if (design)
+        answer["method"] = jointPlane ? "Перенос света на физические экраны"
+                                      : "Подбор общей поверхности на контрольной сетке";
+    if (!recommendation.isEmpty())
+        answer["warning"] = recommendation;
     if (design)
         answer["profile"] = surface;
     return answer;

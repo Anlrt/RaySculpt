@@ -32,7 +32,7 @@ class Window : public QMainWindow {
     QList<QGraphicsView *> panes;
     QPlainTextEdit *log;
     QLabel *state;
-    QAction *traceAction, *designAction, *cancelAction, *undoAction, *redoAction;
+    QAction *deleteAction, *traceAction, *designAction, *cancelAction, *undoAction, *redoAction;
     QJsonObject scene, saved, inspectedScene;
     QJsonArray inspectionRows;
     QString selected, filename;

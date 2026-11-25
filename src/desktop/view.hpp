@@ -30,6 +30,7 @@ class View : public QWidget {
     TopAbs_ShapeEnum selection = TopAbs_SHAPE;
     void initialize();
     void redrawManipulator();
+    void showEvent(QShowEvent *) override;
     void paintEvent(QPaintEvent *) override;
     void resizeEvent(QResizeEvent *) override;
     void mousePressEvent(QMouseEvent *) override;

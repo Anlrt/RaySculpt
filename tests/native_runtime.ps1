@@ -87,6 +87,20 @@ try{
     }
     $joint=Check-Job 'two-screens' $two 'design'
     Assert-That ($joint.screens.Count -eq 2 -and $joint.screens[0].flux -gt 0 -and $joint.screens[1].flux -gt 0) 'Missing a receiver in joint fit'
+    Assert-That ($joint.screens[0].screen_id -eq $two.objects[2].id -and $joint.screens[1].screen_id -eq $two.objects[3].id) 'Receiver identity changed'
+    Assert-That ($joint.screens[0].error -lt .5 -and $joint.screens[1].error -lt .5) 'Coplanar projections missed the requested intensities'
+    $angled=($two | ConvertTo-Json -Depth 40 | ConvertFrom-Json -AsHashtable)
+    $side=12.5/[Math]::Sqrt(2)
+    for($i=0;$i -lt 2;$i++){
+        $direction=2*$i-1
+        $angled.objects[2+$i].rot=@(0,(-45*$direction),0)
+        $angled.objects[2+$i].pos=@(($direction*($side+.2)),0,(125+$side))
+    }
+    $corner=Check-Job 'perpendicular-receivers' $angled 'design'
+    Assert-That ($corner.screens.Count -eq 2 -and $corner.screens[0].flux -gt 0 -and $corner.screens[1].flux -gt 0) 'Dark receiver in a right-angle setup'
+    Assert-That ($corner.screens[0].error -lt .3 -and $corner.screens[1].error -lt .3) 'Incorrect mapping of the tilted receivers'
+    Assert-That ($corner.screens[0].image -ne $corner.screens[1].image) 'Projection files collide'
+    Write-Output ("Coplanar relative errors {0:N3}, {1:N3}; right-angle relative errors {2:N3}, {3:N3}" -f $joint.screens[0].error,$joint.screens[1].error,$corner.screens[0].error,$corner.screens[1].error)
     $cli='caustic_cli.exe'
     $picture="$work/extracted/assets/"+$before.objects[2].image
     Invoke-Native $cli @('design-photo',$picture,'--out',"$work/photo",'--grid','48','--map-size','48','--resolution','64','--cells','94','--rays','60000','--corrections','0','--formats','step,brep,stl,3mf,obj')

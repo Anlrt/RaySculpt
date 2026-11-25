@@ -94,9 +94,27 @@ void Window::chooseImage() {
         for (auto v : scene["objects"].toArray())
             if (v.toObject()["kind"] == "screen")
                 choices << v.toObject();
-        if (choices.size() != 1)
-            fail("Выберите экран");
-        screen = choices.front();
+        if (choices.isEmpty())
+            fail("Добавьте экран");
+        if (choices.size() == 1)
+            screen = choices.front();
+        else {
+            QStringList names;
+            int firstFree = -1;
+            for (const auto &o : choices) {
+                if (!o.contains("image") && firstFree < 0)
+                    firstFree = names.size();
+                names << QString("%1. %2%3")
+                             .arg(names.size() + 1)
+                             .arg(o["name"].toString(), o.contains("image") ? " · цель назначена" : "");
+            }
+            bool ok = false;
+            auto choice = QInputDialog::getItem(this, "Назначение изображения", "Экран", names,
+                                                std::max(0, firstFree), false, &ok);
+            if (!ok)
+                return;
+            screen = choices.at(names.indexOf(choice));
+        }
     }
     auto file = QFileDialog::getOpenFileName(
         this, "Изображение экрана", {}, "Изображения (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.pgm)");
@@ -223,7 +241,7 @@ void Window::launch(QJsonObject req) {
     if (!f.open(QIODevice::WriteOnly) || f.write(QJsonDocument(req).toJson()) < 0)
         fail(f.errorString());
     f.close();
-    job.start(QCoreApplication::applicationFilePath(),
+    job.start(QDir(QCoreApplication::applicationDirPath()).filePath("RaySculpt.exe"),
               {"--job", f.fileName(), pendingDir->filePath("answer.json")});
     refresh();
 }
@@ -291,6 +309,10 @@ void Window::finish(int code) {
         return;
     }
     auto rows = answer["screens"].toArray();
+    if (answer.contains("method"))
+        log->appendPlainText(answer["method"].toString());
+    if (answer.contains("warning"))
+        log->appendPlainText(answer["warning"].toString());
     if (rows.isEmpty())
         fail("В расчёте отсутствуют экраны");
     for (auto v : rows)
@@ -347,7 +369,10 @@ void Window::finish(int code) {
 void Window::compare() {
     for (auto p : panes)
         p->scene()->clear();
-    auto row = frames.at(results->currentIndex()).toObject();
+    const auto index = results->currentIndex();
+    if (index < 0 || index >= frames.size())
+        return;
+    auto row = frames.at(index).toObject();
     if (row.isEmpty())
         return;
     QImage actual(row["image"].toString());

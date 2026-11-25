@@ -44,6 +44,7 @@ void Window::properties() {
     fields->addRow("Тип", new QLabel(label(k)));
     auto check = [&](QString title, QString field) {
         auto box = new QCheckBox;
+        box->setObjectName("property." + field);
         box->setChecked(o[field].toBool());
         fields->addRow(title, box);
         connect(box, &QCheckBox::clicked, this,

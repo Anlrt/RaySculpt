@@ -202,6 +202,7 @@ fn spline_axis(values: &mut [f64], grid: usize, transpose: bool) {
 fn profile(
     tx: &[f64],
     ty: &[f64],
+    depths: Option<&[f64]>,
     n: usize,
     aperture: f64,
     thickness: f64,
@@ -239,7 +240,8 @@ fn profile(
                 let distance = (source * source + ex * ex + ey * ey).sqrt();
                 let (nx, ny) = (ex / distance, ey / distance);
                 let nz = (index * index - nx * nx - ny * ny).sqrt();
-                let (ox, oy, oz) = (tx[p] - x, ty[p] - y, screen - z);
+                let target_z = depths.map_or(screen, |values| values[p]);
+                let (ox, oy, oz) = (tx[p] - x, ty[p] - y, target_z - z);
                 let length = (ox * ox + oy * oy + oz * oz).sqrt();
                 let denominator = nz - oz / length;
                 if !denominator.is_finite() || denominator <= 0. {
@@ -377,9 +379,10 @@ pub unsafe extern "C" fn raysculpt_inverse_transport_v1(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn raysculpt_optical_profile_v1(
+pub unsafe extern "C" fn raysculpt_optical_profile_v2(
     tx: *const f64,
     ty: *const f64,
+    tz: *const f64,
     n: usize,
     aperture: f64,
     thickness: f64,
@@ -410,7 +413,12 @@ pub unsafe extern "C" fn raysculpt_optical_profile_v1(
                 std::slice::from_raw_parts(ty, n * n),
             )
         };
-        let values = profile(x, y, n, aperture, thickness, index, source, screen, apply)?;
+        let depths = if tz.is_null() { None } else {
+            let values = unsafe { std::slice::from_raw_parts(tz, n * n) };
+            if values.iter().any(|z| !z.is_finite() || *z <= thickness) { return Err(1); }
+            Some(values)
+        };
+        let values = profile(x, y, depths, n, aperture, thickness, index, source, screen, apply)?;
         unsafe {
             std::ptr::copy_nonoverlapping(values.as_ptr(), out, values.len());
         }
