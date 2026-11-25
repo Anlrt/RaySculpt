@@ -121,7 +121,7 @@ uses C++20, Qt Widgets and an OpenGL viewport provided by Open CASCADE. The ray 
 The Windows x64 editor builds with Visual Studio 2022 (MSVC C++ desktop tools and CMake), PowerShell 7 and stable Rust for `x86_64-pc-windows-msvc`. Use a conda-forge SDK with matching x64 Qt, OCCT, OpenCV and libarchive libraries. From the project root in PowerShell:
 
 ```powershell
-micromamba create -y -p ./build/sdk -c conda-forge 'qt6-main=6.12.1' 'occt=8.0.2=novtk*' 'libopencv=5.1.0' 'libarchive=3.8.11'
+micromamba create -y -p ./build/sdk --file ./tools/windows-sdk.lock
 ./tools/build_native.ps1 -Sdk ./build/sdk/Library
 ./tools/package_native.ps1 -Sdk ./build/sdk/Library
 ./tests/native_runtime.ps1 -Package ./build/native/portable

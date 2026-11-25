@@ -12,10 +12,15 @@ permissions:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/raysculpt-mamba/pkgs
+          key: raysculpt-windows-sdk-${{ hashFiles('tools/windows-sdk.lock') }}
       - name: Install native build dependencies
+        timeout-minutes: 16
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -24,7 +29,7 @@ jobs:
           Invoke-WebRequest 'https://micro.mamba.pm/api/micromamba/win-64/2.10.0' -OutFile "$env:RUNNER_TEMP/mamba.tar.bz2"
           if((Get-FileHash "$env:RUNNER_TEMP/mamba.tar.bz2").Hash -ne '6283F25F8142606D86E81A43C7103B5D4F1D5C2027E3F9D7326EFF23B33930D8'){throw 'micromamba checksum mismatch'}
           tar -xjf "$env:RUNNER_TEMP/mamba.tar.bz2" -C "$env:RUNNER_TEMP" Library/bin/micromamba.exe
-          & "$env:RUNNER_TEMP/Library/bin/micromamba.exe" create -y -p $sdk -c conda-forge 'qt6-main=6.12.1' 'occt=8.0.2=novtk*' 'libopencv=5.1.0' 'libarchive=3.8.11'
+          & "$env:RUNNER_TEMP/Library/bin/micromamba.exe" create -y -p $sdk --file ./tools/windows-sdk.lock
           if($LASTEXITCODE){exit $LASTEXITCODE}
           rustup default stable-x86_64-pc-windows-msvc
           if($LASTEXITCODE){exit $LASTEXITCODE}
